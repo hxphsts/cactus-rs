@@ -1,0 +1,95 @@
+[package]
+name = "cactus-rs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Safe Rust bindings for Cactus Compute's Needle engine: tool calling, structured extraction and embeddings"
+readme = "../README.md"
+homepage.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/cactus-rs"
+license.workspace = true
+keywords = ["cactus", "needle", "llm", "tool-calling", "inference"]
+categories = ["api-bindings", "science", "text-processing"]
+rust-version.workspace = true
+include = [
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "src/**/*.rs",
+    "examples/*.rs",
+    "benches/*.rs",
+    "tests/**/*.rs",
+    "tests/data/*",
+]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["download-binaries", "download"]
+download-binaries = ["cactus-sys/download-binaries"]
+download = ["dep:ureq", "dep:sha2"]
+schemars = ["dep:schemars"]
+
+[dependencies]
+cactus-sys = { path = "../cactus-sys", version = "0.1.0", default-features = false, features = [
+    "needle",
+] }
+serde = { version = "1.0", features = ["derive"] }
+# `preserve_order` is load-bearing: the model was trained on tool schemas in their declared key
+# order, and sorting the keys measurably lowers its confidence (1.00 -> 0.85 on the README example).
+serde_json = { version = "1.0", features = ["preserve_order"] }
+thiserror = "2"
+ureq = { version = "3.4", default-features = false, features = [
+    "rustls",
+], optional = true }
+sha2 = { version = "0.11", default-features = false, optional = true }
+schemars = { version = "1.0", optional = true }
+
+[lib]
+name = "cactus_rs"
+path = "src/lib.rs"
+# The unit tests run under libtest, which rejects criterion flags such as `--quick`.
+bench = false
+
+[dev-dependencies]
+criterion = "0.7"
+proptest = "1.8"
+
+[[example]]
+name = "desktop"
+path = "examples/desktop.rs"
+
+[[example]]
+name = "lights"
+path = "examples/lights.rs"
+
+[[example]]
+name = "extract"
+path = "examples/extract.rs"
+
+[[example]]
+name = "embed"
+path = "examples/embed.rs"
+
+[[example]]
+name = "custom_weights"
+path = "examples/custom_weights.rs"
+
+[[test]]
+name = "integration_tests"
+path = "tests/integration_tests.rs"
+
+[[test]]
+name = "needle_spec_tests"
+path = "tests/needle_spec_tests.rs"
+
+[[test]]
+name = "property_tests"
+path = "tests/property_tests.rs"
+
+[[bench]]
+name = "completion"
+path = "benches/completion.rs"
+harness = false

@@ -1,0 +1,31 @@
+# Pinned Cactus Compute Needle 3 engine release.
+#
+# `build.rs` reads this file with `include_str!` and a small `key = "value"` scanner, so the
+# syntax stays a strict subset of TOML: comments, one table header, and quoted scalar values.
+#
+# To move the pin: bump `commit`, download every `<platform>/libneedle.a` from
+# `https://huggingface.co/<repo>/resolve/<commit>/<platform>/libneedle.a`, and replace the
+# digests below with `shasum -a 256` output. All 15 platforms ship the same `needle.h`
+# (sha256 ec74770d59cc99f86e909517c2e63ecc966aa99e3f8dc8e110b0b247ed36f58c), vendored as
+# `include/needle.h` for reference.
+
+repo = "Cactus-Compute/needle3"
+commit = "9da75122d4ca11aa4a667281c9c8ba38a7eed679"
+
+# sha256 of `<platform>/libneedle.a` at the commit above.
+[sha256]
+android-arm64 = "4e8ae6f841023d3d25c1e557454bc655323a15e0046c012280b757ce4b2a6f09"
+android-armv7 = "7f5662dbc4126e48591e5c183758c91669f5b40da2442d87c1b613ba6660f6a8"
+android-riscv64 = "f52093cb56f96962a86aa51d69f7bb74b4051a77f24b62aa9543f9cd1f66927d"
+ios-arm64 = "14586565c1c828a5e64723f5fcfba085b618f0d8b1e6bb2a97481a6a918ab0a2"
+ios-sim-arm64 = "61d88f06c2f0069f8fbd3a12d832007f0cb00e93eec634b230a343d4017de575"
+linux-arm64 = "954cb5bfb68e880cda87d74c4695ff85e32ad113702d2fd918d784bd96b6cde6"
+linux-armv7 = "b6abc6b6d125d3062539a63b39bed0bafac837bd124a56cebf032819d4f85aea"
+linux-mipsel = "95f2f22c2e9eee1e65c78a5f776f500cc81b5fd8ce4297d9301a6bfe31319fe3"
+linux-riscv64 = "1fd15887f7514e63a3e18b981310c1590b107937a939bc28ecbbcb632d612391"
+linux-x86_64 = "68ee99c6554cb2370112b77e8ce7f0da652e504f3b460067946113baef7460f5"
+macos-arm64 = "8623a828a8edeb43f6492dd08b8520dcf9d6ae35582101376e49e119840bf5c6"
+tvos-arm64 = "5b0391c52d3321bda01d95e17e52d3c1666aa2e1de6972dfc8e84c1a2ebfb1f1"
+watchos-arm64 = "a744e77db17e76182b6cb1d81d9d3b1938665d71a5f1d7de51b9802917353952"
+windows-arm64 = "f0daf48316e8600a0ea0542205978d4fcd95823ab28f2b8f7a5c7de667916b7d"
+windows-x86_64 = "46a875c0774e03b0714da9a047864e1990e48e69ae8fa8c37be9ae689c3881e9"

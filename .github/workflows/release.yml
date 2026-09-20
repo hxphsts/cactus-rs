@@ -1,0 +1,87 @@
+name: Release
+
+# Publishes both crates and creates the GitHub release when a version tag is pushed.
+on:
+  push:
+    tags: [ "v*" ]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: tag matches the workspace version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | python3 -c "import json,sys; print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name'] == 'cactus-rs'))")
+          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME is not v$version"; exit 1; }
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test --all --all-features
+      - run: cargo package --workspace
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      # A version that is already on crates.io is skipped, so re-running a tag is harmless.
+      - name: which crates still need publishing
+        id: missing
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for crate in cactus-sys cactus-rs; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" -A "cactus-rs-release" "https://crates.io/api/v1/crates/$crate/$version")
+            case "$code" in
+              200) echo "$crate $version is already published"; echo "$crate=false" >> "$GITHUB_OUTPUT" ;;
+              404) echo "$crate $version will be published"; echo "$crate=true" >> "$GITHUB_OUTPUT" ;;
+              *) echo "crates.io answered $code for $crate $version"; exit 1 ;;
+            esac
+          done
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.missing.outputs.cactus-sys == 'true' || steps.missing.outputs.cactus-rs == 'true'
+      - run: sudo apt-get update && sudo apt-get install -y libc++-dev libc++abi-dev
+        if: steps.missing.outputs.cactus-sys == 'true' || steps.missing.outputs.cactus-rs == 'true'
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+        if: steps.missing.outputs.cactus-sys == 'true' || steps.missing.outputs.cactus-rs == 'true'
+      # The safe crate depends on the sys crate, so the order matters.
+      - run: cargo publish -p cactus-sys
+        if: steps.missing.outputs.cactus-sys == 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+      - run: cargo publish -p cactus-rs
+        if: steps.missing.outputs.cactus-rs == 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      # CHANGELOG.md is the one source of release notes: the tagged version's section, verbatim.
+      - name: release notes from the changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '$0 ~ "^## \\[" v "\\]" {on=1; next} on && /^## \[/ {exit} on' CHANGELOG.md > notes.md
+          grep -q '[^[:space:]]' notes.md || { echo "CHANGELOG.md has no section for $version"; exit 1; }
+          printf '\n**Crates:** [cactus-rs %s](https://crates.io/crates/cactus-rs/%s) · [cactus-sys %s](https://crates.io/crates/cactus-sys/%s) · [docs](https://docs.rs/cactus-rs/%s)\n' \
+            "$version" "$version" "$version" "$version" "$version" >> notes.md
+      - run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+        env:
+          GH_TOKEN: ${{ github.token }}

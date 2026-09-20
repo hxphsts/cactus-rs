@@ -1,0 +1,12 @@
+[workspace]
+members = ["cactus-rs", "cactus-sys"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Hxphsts <hxphsts@kernelx.ai>"]
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/hxphsts/cactus-rs"
+repository = "https://github.com/hxphsts/cactus-rs"

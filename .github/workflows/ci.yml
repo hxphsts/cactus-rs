@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # The weights the engine tests run against, pinned like the engine archive itself.
+  WEIGHTS_URL: https://huggingface.co/Cactus-Compute/needle3/resolve/9da75122d4ca11aa4a667281c9c8ba38a7eed679/needle3.cact
+  WEIGHTS_SHA256: c9d915eca282ed42d1a09b143b592adb4cc6744ffe2d294adf5cfc5548170c38
+
+jobs:
+  # Two runners because the crate links a native static library: the archive,
+  # the C++ runtime and the link line all differ per OS.
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libc++-dev libc++abi-dev
+      - uses: dtolnay/rust-toolchain@stable
+      # Without weights every engine test skips, so fetch them once and keep them cached.
+      - uses: actions/cache@v4
+        with:
+          path: weights
+          key: needle3-${{ env.WEIGHTS_SHA256 }}
+      - run: |
+          mkdir -p weights
+          [ -f weights/needle3.cact ] || curl -sfL "$WEIGHTS_URL" -o weights/needle3.cact
+          echo "$WEIGHTS_SHA256  weights/needle3.cact" | shasum -a 256 -c -
+          echo "CACTUS_NEEDLE_WEIGHTS=$PWD/weights/needle3.cact" >> "$GITHUB_ENV"
+      - run: cargo test --all --all-features
+
+  clippy:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --all-targets -- -D warnings
+
+  fmt:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  doc:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+          DOCS_RS: "1"
+
+  msrv:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85
+      - run: cargo check --all
+
+  # No download feature: the build must refuse without an archive, and succeed with a local one.
+  offline:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: refuses to build without an archive
+        run: |
+          ! cargo build -p cactus-rs --no-default-features 2> refusal.log
+          grep -q "CACTUS_NEEDLE_LIB_DIR" refusal.log
+      - name: builds against a local archive
+        run: |
+          mkdir -p engine
+          curl -sfL "$ENGINE_URL" -o engine/libneedle.a
+          echo "$ENGINE_SHA256  engine/libneedle.a" | shasum -a 256 -c -
+          CACTUS_NEEDLE_LIB_DIR="$PWD/engine" cargo build -p cactus-rs --no-default-features
+        env:
+          ENGINE_URL: https://huggingface.co/Cactus-Compute/needle3/resolve/9da75122d4ca11aa4a667281c9c8ba38a7eed679/macos-arm64/libneedle.a
+          ENGINE_SHA256: 8623a828a8edeb43f6492dd08b8520dcf9d6ae35582101376e49e119840bf5c6
+
+  # Both crates must build from their own tarballs, in dependency order.
+  package:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo package --workspace

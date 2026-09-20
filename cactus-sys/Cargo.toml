@@ -1,0 +1,46 @@
+[package]
+name = "cactus-sys"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Raw FFI bindings to Cactus Compute inference engines (Needle)"
+readme = "../README.md"
+homepage.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/cactus-sys"
+license.workspace = true
+keywords = ["cactus", "needle", "ffi", "inference", "llm"]
+categories = ["external-ffi-bindings", "science", "api-bindings"]
+rust-version.workspace = true
+links = "cactus"
+build = "build.rs"
+include = [
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "build.rs",
+    "prebuilt.toml",
+    "include/needle.h",
+    "include/README.md",
+    "shim/libcxx_compat.c",
+    "src/**/*.rs",
+    "tests/**/*.rs",
+]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+default = ["needle", "download-binaries"]
+needle = []
+download-binaries = ["dep:ureq", "dep:sha2"]
+
+[build-dependencies]
+cc = "1.2"
+ureq = { version = "3.4", default-features = false, features = [
+    "rustls",
+], optional = true }
+sha2 = { version = "0.11", default-features = false, optional = true }
+
+[lib]
+name = "cactus_sys"
+path = "src/lib.rs"
