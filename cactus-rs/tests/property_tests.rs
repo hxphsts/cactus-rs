@@ -1,15 +1,21 @@
 //! Property-based tests for the parts of the crate that never touch the engine.
 //!
-//! Three guarantees are worth holding across generated input rather than a handful of examples:
-//! a [`Tool`] survives the trip to the wire and back whatever it is named, a [`Completion`]
-//! parses whatever JSON object the engine hands it without panicking, and a [`Call`]'s arguments
-//! mean the same thing after [`Call::arguments_json`] as before it.
+//! Four guarantees are worth holding across generated input rather than a handful of examples:
+//! a [`Tool`] survives the trip to the wire and back whatever it is named, a [`Completion`] and a
+//! [`Transcript`] parse whatever JSON object the engine hands them without panicking, text that
+//! is not JSON is an error rather than a panic, and a [`Call`]'s arguments mean the same thing
+//! after [`Call::arguments_json`] as before it.
 //!
-//! Nothing here loads weights or builds a [`Needle`], so this file runs on every machine.
+//! Nothing here loads weights or builds a [`Needle`] or a [`Whistle`], so this file runs on
+//! every machine.
+//!
+//! [`Needle`]: cactus_rs::needle::Needle
+//! [`Whistle`]: cactus_rs::whistle::Whistle
 
 use std::fmt::Debug;
 
 use cactus_rs::needle::{Call, Completion, Tool};
+use cactus_rs::whistle::Transcript;
 use proptest::prelude::*;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -75,6 +81,36 @@ fn json_object() -> impl Strategy<Value = Value> {
         .prop_map(|pairs| Value::Object(pairs.into_iter().collect()))
 }
 
+/// The keys a transcript and an audio turn are read from, so generated objects hit them often.
+const SPEECH_KEYS: &[&str] = &[
+    "text",
+    "language",
+    "ttft_ms",
+    "decode_tps",
+    "words",
+    "audio_text",
+    "audio_language",
+    "audio_ttft_ms",
+    "audio_decode_tps",
+    "audio_words",
+];
+
+/// An arbitrary JSON object whose keys are drawn from [`SPEECH_KEYS`] as often as not, with
+/// arbitrary values and words lists of arbitrary objects.
+fn speech_object() -> impl Strategy<Value = Value> {
+    let key = prop_oneof![
+        prop::sample::select(SPEECH_KEYS).prop_map(str::to_owned),
+        text(8),
+    ];
+    let value = prop_oneof![
+        json_value(),
+        prop::collection::vec(json_object(), 0..3).prop_map(Value::Array),
+        any::<f64>().prop_map(|number| json!(number)),
+    ];
+    prop::collection::vec((key, value), 0..8)
+        .prop_map(|pairs| Value::Object(pairs.into_iter().collect()))
+}
+
 /// The field names [`Completion`] reads, which an "unknown field" must not collide with.
 const KNOWN: &[&str] = &[
     "type",
@@ -91,6 +127,11 @@ const KNOWN: &[&str] = &[
     "peak_ram_mb",
     "validation",
 ];
+
+/// Whether `key` is one of the fields an audio turn adds, which [`Completion::audio`] reads.
+fn is_audio_key(key: &str) -> bool {
+    key.starts_with("audio_")
+}
 
 proptest! {
     /// A declaration means the same thing after a trip through the wire format.
@@ -159,7 +200,7 @@ proptest! {
 
         let object = envelope.as_object_mut().expect("the envelope is an object");
         for (key, value) in extra.as_object().expect("the extra fields are an object") {
-            if !KNOWN.contains(&key.as_str()) {
+            if !KNOWN.contains(&key.as_str()) && !is_audio_key(key) {
                 object.insert(key.clone(), value.clone());
             }
         }
@@ -171,6 +212,35 @@ proptest! {
         prop_assert_eq!(completion.calls().len(), 1);
         prop_assert_eq!(completion.calls()[0].name(), "set_light");
         prop_assert_eq!(completion.confidence(), 0.5);
+        prop_assert!(completion.audio().is_none());
+    }
+
+    /// Whatever speech fields arrive, with whatever values, a completion parses or refuses
+    /// without panicking.
+    #[test]
+    fn parsing_an_arbitrary_audio_envelope_never_panics(envelope in speech_object()) {
+        let text = serde_json::to_string(&envelope).expect("a Value serialises");
+        if let Ok(completion) = text.parse::<Completion>() {
+            let _ = completion.audio().map(Transcript::language);
+        }
+    }
+
+    /// Whatever JSON object arrives, parsing it as a transcript answers rather than panicking.
+    #[test]
+    fn parsing_an_arbitrary_transcript_never_panics(envelope in speech_object()) {
+        let text = serde_json::to_string(&envelope).expect("a Value serialises");
+        if let Ok(transcript) = text.parse::<Transcript>() {
+            let _ = (transcript.language(), transcript.is_empty(), transcript.words().len());
+        }
+    }
+
+    /// Text that is not JSON is an error for both parsers, never a panic.
+    #[test]
+    fn text_that_is_not_json_is_refused(text in any::<String>()) {
+        prop_assume!(serde_json::from_str::<Value>(&text).is_err());
+
+        prop_assert!(text.parse::<Transcript>().is_err());
+        prop_assert!(text.parse::<Completion>().is_err());
     }
 
     /// `arguments_json` is the arguments, not a rendering of them.

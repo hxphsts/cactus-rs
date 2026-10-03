@@ -11,8 +11,10 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   # The weights the engine tests run against, pinned like the engine archive itself.
-  WEIGHTS_URL: https://huggingface.co/Cactus-Compute/needle3/resolve/9da75122d4ca11aa4a667281c9c8ba38a7eed679/needle3.cact
-  WEIGHTS_SHA256: c9d915eca282ed42d1a09b143b592adb4cc6744ffe2d294adf5cfc5548170c38
+  NEEDLE_WEIGHTS_URL: https://huggingface.co/Cactus-Compute/needle3/resolve/c7c415a3d1b3d929014bc6e866d51ebb971f7089/needle3.cact
+  NEEDLE_WEIGHTS_SHA256: c9d915eca282ed42d1a09b143b592adb4cc6744ffe2d294adf5cfc5548170c38
+  WHISTLE_WEIGHTS_URL: https://huggingface.co/Cactus-Compute/whistle/resolve/b358ddadd89b7a713b5aa131f23032d3cca1b251/whistle.cact
+  WHISTLE_WEIGHTS_SHA256: b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb
 
 jobs:
   # Two runners because the crate links a native static library: the archive,
@@ -31,12 +33,17 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: weights
-          key: needle3-${{ env.WEIGHTS_SHA256 }}
+          key: weights-${{ env.NEEDLE_WEIGHTS_SHA256 }}-${{ env.WHISTLE_WEIGHTS_SHA256 }}
       - run: |
           mkdir -p weights
-          [ -f weights/needle3.cact ] || curl -sfL "$WEIGHTS_URL" -o weights/needle3.cact
-          echo "$WEIGHTS_SHA256  weights/needle3.cact" | shasum -a 256 -c -
-          echo "CACTUS_NEEDLE_WEIGHTS=$PWD/weights/needle3.cact" >> "$GITHUB_ENV"
+          [ -f weights/needle3.cact ] || curl -sfL "$NEEDLE_WEIGHTS_URL" -o weights/needle3.cact
+          [ -f weights/whistle.cact ] || curl -sfL "$WHISTLE_WEIGHTS_URL" -o weights/whistle.cact
+          echo "$NEEDLE_WEIGHTS_SHA256  weights/needle3.cact" | shasum -a 256 -c -
+          echo "$WHISTLE_WEIGHTS_SHA256  weights/whistle.cact" | shasum -a 256 -c -
+          {
+            echo "CACTUS_NEEDLE_WEIGHTS=$PWD/weights/needle3.cact"
+            echo "CACTUS_WHISTLE_WEIGHTS=$PWD/weights/whistle.cact"
+          } >> "$GITHUB_ENV"
       - run: cargo test --all --all-features
 
   clippy:
@@ -46,7 +53,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets --all-features -- -D warnings
 
   fmt:
     runs-on: macos-14
@@ -91,8 +98,8 @@ jobs:
           echo "$ENGINE_SHA256  engine/libneedle.a" | shasum -a 256 -c -
           CACTUS_NEEDLE_LIB_DIR="$PWD/engine" cargo build -p cactus-rs --no-default-features
         env:
-          ENGINE_URL: https://huggingface.co/Cactus-Compute/needle3/resolve/9da75122d4ca11aa4a667281c9c8ba38a7eed679/macos-arm64/libneedle.a
-          ENGINE_SHA256: 8623a828a8edeb43f6492dd08b8520dcf9d6ae35582101376e49e119840bf5c6
+          ENGINE_URL: https://huggingface.co/Cactus-Compute/needle3/resolve/c7c415a3d1b3d929014bc6e866d51ebb971f7089/macos-arm64/libneedle.a
+          ENGINE_SHA256: a3b9163abe7b4bd52487c4005506cb35c5163bb9b9587af4ae07ed7587de697d
 
   # Both crates must build from their own tarballs, in dependency order.
   package:

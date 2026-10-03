@@ -2,14 +2,14 @@
 //!
 //! ## Overview
 //!
-//! Whistle is not a second engine. It is a 17 MB speech model loaded into the same runtime as
+//! Whistle is not a second engine. It is a 16.9 MB speech model loaded into the same runtime as
 //! Needle, which holds one model per kind, so a [`Whistle`] and a
 //! [`Needle`](crate::needle::Needle) live side by side in one process. Five types carry the
 //! whole API:
 //!
 //! | Type | What it is |
 //! | --- | --- |
-//! | [`Weights`] | the 17 MB `whistle.cact` archive, validated |
+//! | [`Weights`] | the 16.9 MB `whistle.cact` archive, validated |
 //! | [`TranscribeOptions`] | language, keywords to bias towards, and word timestamps |
 //! | [`Whistle`] | the speech model, held by exactly one value in the process |
 //! | [`Transcript`] | one clip's text and [`Language`], with its [`Word`]s when asked for |
@@ -23,6 +23,10 @@
 //! the engine: a longer one is [`Error::AudioTooLong`], and a NaN or
 //! an infinity is [`Error::NonFiniteSample`]. An empty clip is
 //! not an error: it transcribes to an empty [`Transcript`], as silence does.
+//!
+//! [`Whistle::embed`] turns a clip into speech embeddings: one row of
+//! [`Whistle::embedding_width`] floats (512 with the pinned weights) per 80 ms frame,
+//! [`frame_count`] rows in all, flattened into one `Vec<f32>`.
 //!
 //! The speech model also runs inside the text model:
 //! [`Needle::complete_audio`](crate::needle::Needle::complete_audio) transcribes a clip and

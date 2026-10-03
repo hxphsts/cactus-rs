@@ -117,7 +117,7 @@ impl WhistleBuilder {
     /// archive, [`Error::WrongModel`] when the archive is a Needle archive, and [`Error::Load`]
     /// when the engine rejects it.
     pub fn build(self) -> Result<Whistle> {
-        // Checked first: a bad keyword should not cost a 17 MB load.
+        // Checked first: a bad keyword should not cost a 16.9 MB load.
         let audio = self.options.encode()?;
 
         // The slot releases the speech model on every path out of this function. It is declared
@@ -126,7 +126,7 @@ impl WhistleBuilder {
         let mut guard = ffi::lock();
         slot.load(&mut guard, self.weights.as_bytes())?;
         drop(guard);
-        // The engine copied the archive; 17 MB need not stay resident on our side.
+        // The engine copied the archive; 16.9 MB need not stay resident on our side.
         drop(self.weights);
 
         Ok(Whistle {

@@ -385,10 +385,17 @@ impl Slot {
 
     /// Loads `bytes` as this slot's kind, unless that archive is already loaded.
     ///
-    /// Needle 3 and Whistle archives share a magic tag, so the kind is learned from the engine:
-    /// the load must add this slot's bit to [`Guard::models`]. If it adds the other bit
-    /// instead, the archive stays loaded as the other kind (nothing unloads weights), its
-    /// fingerprint is recorded there, and the call returns [`Error::WrongModel`].
+    /// Archives already seen are answered from their fingerprints without the engine: the one
+    /// loaded as this kind is reused, one loaded as the other kind is [`Error::WrongModel`]
+    /// (checked before a mismatch of this kind, so a wrong archive is named as such whatever
+    /// else is loaded), and any other archive while this kind is loaded is
+    /// [`Error::WeightsAlreadyLoaded`].
+    ///
+    /// An archive not seen before goes to the engine. Needle 3 and Whistle archives share a
+    /// magic tag, so the kind is learned from it: the load must add this slot's bit to
+    /// [`Guard::models`]. If it adds the other bit instead, the archive stays loaded as the
+    /// other kind (nothing unloads weights), its fingerprint is recorded there, and the call
+    /// returns [`Error::WrongModel`].
     ///
     /// # Errors
     ///
@@ -403,16 +410,17 @@ impl Slot {
             expected: mine.model(),
         };
 
-        if let Some(loaded) = guard.0.loaded[mine.index()] {
-            return if loaded == wanted {
-                Ok(())
-            } else {
-                Err(Error::WeightsAlreadyLoaded)
-            };
+        // Already loaded as this kind: nothing to do.
+        if guard.0.loaded[mine.index()] == Some(wanted) {
+            return Ok(());
         }
         // Already loaded, as the other kind: the engine need not see it again.
         if guard.0.loaded[other.index()] == Some(wanted) {
             return Err(expected);
+        }
+        // A different archive of this kind owns the slot for the life of the process.
+        if guard.0.loaded[mine.index()].is_some() {
+            return Err(Error::WeightsAlreadyLoaded);
         }
 
         let before = guard.models();

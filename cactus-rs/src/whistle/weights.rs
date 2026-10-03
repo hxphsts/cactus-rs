@@ -2,7 +2,7 @@
 //!
 //! ## Overview
 //!
-//! Whistle's weights are a 17 MB `whistle.cact` archive, and [`Weights`] is that archive in
+//! Whistle's weights are a 16.9 MB `whistle.cact` archive, and [`Weights`] is that archive in
 //! memory with its magic tag checked. The check rejects files that are no archive at all; it
 //! cannot reject a Needle archive, which carries the same tag. Only the engine can tell the two
 //! apart, so [`WhistleBuilder::build`](super::WhistleBuilder::build) reports a Needle archive as
@@ -216,7 +216,7 @@ impl Weights {
     ///    [`WEIGHTS_SHA256`] and installed under a temporary name before being renamed into
     ///    place, so an interrupted fetch never leaves a half-written cache entry.
     ///
-    /// The download is 17 MB and happens once per machine. It identifies itself as
+    /// The download is 16.9 MB and happens once per machine. It identifies itself as
     /// `cactus-rs/<version>` and sends nothing else.
     ///
     /// # Examples
