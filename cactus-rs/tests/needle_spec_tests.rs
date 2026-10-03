@@ -53,21 +53,23 @@ const DATE_FACT: &str = "date: 2026-10-03 Sat 12:30; ";
 const MAX_NEW_TOKENS: u32 = 512;
 
 /// Cases the pinned engine gets wrong, under upstream's own harness as well: measured on Linux
-/// x86_64 on 2026-10-03 at Hugging Face commit `c7c415a3` (engine 3.1.0). The second is
-/// `critical`.
+/// x86_64 on 2026-10-03 at Hugging Face commit `c7c415a3` (engine 3.1.0), where upstream's
+/// Python client fails exactly these four. The third is `critical`.
 ///
-/// The macOS arm64 baseline is carried over from commit `9da75122` (measured 2026-09-19) pending
-/// the CI run on the new engine: these three cases plus "check whether the robot vacuum is
-/// charging", which both stacks now pass on x86_64 and which is left out until macOS confirms.
-const ENGINE_BASELINE_FAILURES: [&str; 3] = [
+/// The macOS arm64 run of this suite (GitHub's `macos-14` runner, same day, same commit) fails
+/// the same four cases and no others, so the list is architecture-wide. At `9da75122` "lock the
+/// back door" failed only on x86_64 and "check whether the robot vacuum is charging" failed
+/// everywhere; the new engine moved both.
+const ENGINE_BASELINE_FAILURES: [&str; 4] = [
+    "lock the back door",
     "play some jazz in the living room",
     "dim the bedroom lights to 150 percent",
     "start the vacuum in the kitchen and open the living room blinds",
 ];
 
-/// The one further case upstream's x86_64 engine gets wrong (AVX2 kernels), at `9da75122` and
-/// again at `c7c415a3`.
-const X86_64_BASELINE_FAILURES: [&str; 1] = ["lock the back door"];
+/// Cases upstream's engine gets wrong only with the x86_64 kernels (AVX2). Empty at `c7c415a3`;
+/// kept so an architecture-specific miss has somewhere to go without touching the logic below.
+const X86_64_BASELINE_FAILURES: [&str; 0] = [];
 
 /// Whether upstream's own stack fails `query` on the architecture this test was built for.
 fn fails_upstream(query: &str) -> bool {
