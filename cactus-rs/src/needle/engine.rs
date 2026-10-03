@@ -57,7 +57,8 @@ use super::completion::Completion;
 use super::tool::Tool;
 use super::weights::Weights;
 use crate::error::{Error, Result};
-use crate::ffi::{self, Input, Kind, Slot};
+use crate::ffi::{self, EncodedAudio, Input, Kind, Slot};
+use crate::whistle::TranscribeOptions;
 
 /// Default token budget for one turn.
 const DEFAULT_MAX_NEW_TOKENS: u32 = 256;
@@ -65,6 +66,10 @@ const DEFAULT_MAX_NEW_TOKENS: u32 = 256;
 /// Floor on the output buffer. Tool-call envelopes measured at a few hundred bytes; this leaves
 /// room for a turn that calls many tools at once without ever growing the buffer.
 const MIN_OUTPUT_CAPACITY: usize = 64 * 1024;
+
+/// Extra output room for an audio turn: the transcript and, when asked for, every word with its
+/// timing ride in the same envelope as the calls.
+const AUDIO_HEADROOM: usize = 64 * 1024;
 
 /// Bytes of envelope kept when the engine reports a failure in prose rather than JSON.
 const DETAIL_EXCERPT: usize = 200;
@@ -171,7 +176,7 @@ impl CompleteOptions {
 /// use cactus_rs::needle::{Needle, Tool, Weights};
 /// use serde_json::json;
 ///
-/// let needle = Needle::builder(Weights::fetch()?)
+/// let needle = Needle::builder(Weights::from_file("needle3.cact")?)
 ///     .system("You control the lights.")
 ///     .tools([
 ///         Tool::new("set_light", "Turn a light on or off", json!({ "type": "object" })),
@@ -196,7 +201,7 @@ impl NeedleBuilder {
     /// ```no_run
     /// use cactus_rs::needle::{Needle, Weights};
     ///
-    /// let needle = Needle::builder(Weights::fetch()?)
+    /// let needle = Needle::builder(Weights::from_file("needle3.cact")?)
     ///     .system("You control the lights.")
     ///     .build()?;
     /// # Ok::<(), cactus_rs::Error>(())
@@ -218,7 +223,7 @@ impl NeedleBuilder {
     /// use cactus_rs::needle::{Needle, Tool, Weights};
     /// use serde_json::json;
     ///
-    /// let needle = Needle::builder(Weights::fetch()?)
+    /// let needle = Needle::builder(Weights::from_file("needle3.cact")?)
     ///     .tool(Tool::new("ping", "Check a host", json!({ "type": "object" })))
     ///     .build()?;
     /// # Ok::<(), cactus_rs::Error>(())
@@ -238,7 +243,7 @@ impl NeedleBuilder {
     /// use serde_json::json;
     ///
     /// let tools = vec![Tool::new("ping", "Check a host", json!({ "type": "object" }))];
-    /// let needle = Needle::builder(Weights::fetch()?).tools(tools).build()?;
+    /// let needle = Needle::builder(Weights::from_file("needle3.cact")?).tools(tools).build()?;
     /// # Ok::<(), cactus_rs::Error>(())
     /// ```
     #[must_use]
@@ -257,7 +262,7 @@ impl NeedleBuilder {
     /// ```no_run
     /// use cactus_rs::needle::{Needle, Weights};
     ///
-    /// let needle = Needle::builder(Weights::fetch()?)
+    /// let needle = Needle::builder(Weights::from_file("needle3.cact")?)
     ///     .tool_index("/var/lib/lights/tools.index")
     ///     .build()?;
     /// # Ok::<(), cactus_rs::Error>(())
@@ -278,7 +283,7 @@ impl NeedleBuilder {
     /// ```no_run
     /// use cactus_rs::needle::{Needle, Weights};
     ///
-    /// let mut needle = Needle::builder(Weights::fetch()?).build()?;
+    /// let mut needle = Needle::builder(Weights::from_file("needle3.cact")?).build()?;
     /// assert!(needle.prefix_tokens() > 0);
     /// # Ok::<(), cactus_rs::Error>(())
     /// ```
@@ -342,7 +347,7 @@ impl NeedleBuilder {
 /// ```no_run
 /// use cactus_rs::needle::{Needle, Weights};
 ///
-/// let mut needle = Needle::builder(Weights::fetch()?).build()?;
+/// let mut needle = Needle::builder(Weights::from_file("needle3.cact")?).build()?;
 /// let completion = needle.complete("hello")?;
 /// assert!(completion.kind().is_respond() || completion.kind().is_call());
 /// # Ok::<(), cactus_rs::Error>(())
@@ -385,7 +390,7 @@ impl Needle {
     /// ```no_run
     /// use cactus_rs::needle::{Needle, Weights};
     ///
-    /// let builder = Needle::builder(Weights::fetch()?);
+    /// let builder = Needle::builder(Weights::from_file("needle3.cact")?);
     /// # Ok::<(), cactus_rs::Error>(())
     /// ```
     #[must_use]
@@ -408,7 +413,7 @@ impl Needle {
     /// ```no_run
     /// use cactus_rs::needle::{Needle, Weights};
     ///
-    /// let mut needle = Needle::builder(Weights::fetch()?).build()?;
+    /// let mut needle = Needle::builder(Weights::from_file("needle3.cact")?).build()?;
     /// let completion = needle.complete("turn the kitchen light on")?;
     ///
     /// for call in completion.calls() {
@@ -434,7 +439,7 @@ impl Needle {
     /// ```no_run
     /// use cactus_rs::needle::{CompleteOptions, Needle, Weights};
     ///
-    /// let mut needle = Needle::builder(Weights::fetch()?).build()?;
+    /// let mut needle = Needle::builder(Weights::from_file("needle3.cact")?).build()?;
     /// let options = CompleteOptions::new().with_max_new_tokens(512);
     /// let completion = needle.complete_with_options("summarise the day", options)?;
     /// # Ok::<(), cactus_rs::Error>(())
@@ -454,7 +459,110 @@ impl Needle {
         S: AsRef<str>,
     {
         let input = c_string(input.as_ref(), "input")?;
-        let capacity = options.output_capacity();
+        self.turn(
+            Input::Text(&input),
+            options.output_capacity(),
+            options,
+            None,
+        )
+    }
+
+    /// Runs one turn on a speech clip with the default options.
+    ///
+    /// The engine transcribes the clip with the speech model, answers the transcript as it would
+    /// a typed turn, and reports the transcript in [`Completion::audio`]. The language is
+    /// detected, no keywords are used and no word timestamps are reported.
+    ///
+    /// The speech model must be loaded: build a [`Whistle`](crate::whistle::Whistle) once in
+    /// this process first. It need not stay alive, since weights are never unloaded.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use cactus_rs::needle::{Needle, Weights};
+    /// use cactus_rs::whistle::{self, Whistle};
+    ///
+    /// // Loading Whistle's weights is what lets Needle hear.
+    /// let whistle = Whistle::builder(whistle::Weights::from_file("whistle.cact")?).build()?;
+    /// let mut needle = Needle::builder(Weights::from_file("needle3.cact")?).build()?;
+    ///
+    /// let pcm = vec![0.0_f32; 16_000]; // 16 kHz mono, in [-1, 1]
+    /// let completion = needle.complete_audio(&pcm)?;
+    ///
+    /// if let Some(heard) = completion.audio() {
+    ///     println!("heard: {}", heard.text());
+    /// }
+    /// for call in completion.calls() {
+    ///     println!("{} {}", call.name(), call.arguments_json());
+    /// }
+    /// # Ok::<(), cactus_rs::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// See [`Needle::complete_audio_with_options`].
+    pub fn complete_audio(&mut self, pcm: &[f32]) -> Result<Completion> {
+        self.complete_audio_with_options(pcm, CompleteOptions::default(), &TranscribeOptions::new())
+    }
+
+    /// Runs one turn on a speech clip with an explicit token budget and transcription options.
+    ///
+    /// The transcription options are handed to the engine on every call, so one turn's language
+    /// or keywords never leak into the next. The output buffer gets 64 KiB on top of what the
+    /// token budget needs, for the transcript and its word timestamps.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use cactus_rs::needle::{CompleteOptions, Needle, Weights};
+    /// use cactus_rs::whistle::{self, Language, TranscribeOptions, Whistle};
+    ///
+    /// let _whistle = Whistle::builder(whistle::Weights::from_file("whistle.cact")?).build()?;
+    /// let mut needle = Needle::builder(Weights::from_file("needle3.cact")?).build()?;
+    ///
+    /// let pcm = vec![0.0_f32; 16_000];
+    /// let audio = TranscribeOptions::new()
+    ///     .with_language(Language::De)
+    ///     .with_word_timestamps(true);
+    /// let completion = needle.complete_audio_with_options(&pcm, CompleteOptions::new(), &audio)?;
+    /// # Ok::<(), cactus_rs::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidKeyword`] or [`Error::InteriorNul`] when a keyword cannot be
+    /// passed on, [`Error::AudioTooLong`] for a clip over
+    /// [`MAX_SAMPLES`](crate::whistle::MAX_SAMPLES), [`Error::NonFiniteSample`] for a NaN or an
+    /// infinity, [`Error::SpeechModelNotLoaded`] when no Whistle weights are loaded,
+    /// [`Error::Complete`] when the engine reports a failure, [`Error::Truncated`] when the
+    /// answer filled the output buffer, and [`Error::Envelope`] when the response is not the
+    /// JSON this crate expects.
+    pub fn complete_audio_with_options(
+        &mut self,
+        pcm: &[f32],
+        options: CompleteOptions,
+        audio: &TranscribeOptions,
+    ) -> Result<Completion> {
+        let audio = audio.encode()?;
+        crate::whistle::validate(pcm)?;
+        let capacity = options
+            .output_capacity()
+            .saturating_add(AUDIO_HEADROOM)
+            .min(i32::MAX as usize);
+        self.turn(Input::Audio(pcm), capacity, options, Some(&audio))
+    }
+
+    /// Runs one turn of either kind into the reused output buffer.
+    ///
+    /// With `audio`, checks that the speech model is loaded and configures its transcription
+    /// under the same lock as the completion, so no other call can change it in between.
+    fn turn(
+        &mut self,
+        input: Input<'_>,
+        capacity: usize,
+        options: CompleteOptions,
+        audio: Option<&EncodedAudio>,
+    ) -> Result<Completion> {
         let budget = c_int::try_from(options.max_new_tokens()).unwrap_or(c_int::MAX);
 
         self.out.resize(capacity, 0);
@@ -463,7 +571,17 @@ impl Needle {
         self.out[0] = 0;
 
         let mut guard = ffi::lock();
-        let rc = guard.complete(Input::Text(&input), budget, &mut self.out)?;
+        if let Some(audio) = audio {
+            // Without the speech model the engine fails with a message about passing a file to
+            // `needle_load`; the typed error says what to do from Rust instead.
+            if guard.models() & Kind::Speech.bit() == 0 {
+                return Err(Error::SpeechModelNotLoaded);
+            }
+            // The setting is process-global and survives `needle_reset` and `needle_init`, so
+            // it is set on every audio turn rather than trusted from the last one.
+            guard.set_audio(audio);
+        }
+        let rc = guard.complete(input, budget, &mut self.out)?;
 
         let end = self
             .out
@@ -505,7 +623,7 @@ impl Needle {
     /// ```no_run
     /// use cactus_rs::needle::{Needle, Weights};
     ///
-    /// let mut needle = Needle::builder(Weights::fetch()?).build()?;
+    /// let mut needle = Needle::builder(Weights::from_file("needle3.cact")?).build()?;
     /// let vector = needle.embed("kitchen")?;
     /// assert_eq!(vector.len(), needle.embedding_dimension()?);
     /// # Ok::<(), cactus_rs::Error>(())
@@ -539,7 +657,7 @@ impl Needle {
     /// ```no_run
     /// use cactus_rs::needle::{Needle, Weights};
     ///
-    /// let mut needle = Needle::builder(Weights::fetch()?).build()?;
+    /// let mut needle = Needle::builder(Weights::from_file("needle3.cact")?).build()?;
     /// assert_eq!(needle.embedding_dimension()?, 3072);
     /// # Ok::<(), cactus_rs::Error>(())
     /// ```
@@ -553,9 +671,8 @@ impl Needle {
         }
 
         // A null buffer is the documented way to ask for the count without computing anything.
-        // The engine needs one input, and an empty text is the cheapest one there is.
-        // TODO(probe b): confirm the empty text yields the dimension; if it is refused, ask with
-        // `c"kitchen"` instead.
+        // The engine needs one input, and an empty text is the cheapest one there is: measured
+        // against the pinned engine, it returns 3072 in about a microsecond.
         let rc = ffi::lock().embed_len(Input::Text(c""))?;
         let dimension = usize::try_from(rc).map_err(|_| Error::Embed)?;
         if dimension == 0 {
@@ -575,7 +692,7 @@ impl Needle {
     /// ```no_run
     /// use cactus_rs::needle::{Needle, Weights};
     ///
-    /// let mut needle = Needle::builder(Weights::fetch()?).build()?;
+    /// let mut needle = Needle::builder(Weights::from_file("needle3.cact")?).build()?;
     /// needle.complete("turn the kitchen light on")?;
     /// needle.reset(); // the next turn does not see the kitchen
     /// # Ok::<(), cactus_rs::Error>(())
@@ -594,7 +711,9 @@ impl Needle {
     /// ```no_run
     /// use cactus_rs::needle::{Needle, Weights};
     ///
-    /// let needle = Needle::builder(Weights::fetch()?).system("Be terse.").build()?;
+    /// let needle = Needle::builder(Weights::from_file("needle3.cact")?)
+    ///     .system("Be terse.")
+    ///     .build()?;
     /// println!("prefix: {} tokens", needle.prefix_tokens());
     /// # Ok::<(), cactus_rs::Error>(())
     /// ```
@@ -680,6 +799,19 @@ mod tests {
             .with_max_new_tokens(u32::MAX)
             .output_capacity();
         assert_eq!(capacity, i32::MAX as usize);
+    }
+
+    #[test]
+    fn an_audio_turn_gets_headroom_within_an_int() {
+        let small = CompleteOptions::new().output_capacity() + AUDIO_HEADROOM;
+        assert_eq!(small, MIN_OUTPUT_CAPACITY + 64 * 1024);
+
+        let huge = CompleteOptions::new()
+            .with_max_new_tokens(u32::MAX)
+            .output_capacity()
+            .saturating_add(AUDIO_HEADROOM)
+            .min(i32::MAX as usize);
+        assert_eq!(huge, i32::MAX as usize);
     }
 
     #[test]

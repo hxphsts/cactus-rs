@@ -8,7 +8,7 @@
 //!   thread they come from. [`Guard::last_error`] copies the engine's error string before the
 //!   guard can be released, as the header requires.
 //! - **One slot per kind.** [`Slot::take`] claims the text or the speech model for one value
-//!   (a `Needle`, later a `Whistle`), and its `Drop` gives the claim back.
+//!   (a `Needle` or a `Whistle`), and its `Drop` gives the claim back.
 //! - **Types for the pointer rules.** [`Input`] makes "exactly one of `input` and `pcm` is
 //!   non-null" unrepresentable to get wrong, slices carry their own lengths, and every length
 //!   that crosses into an `int` is clamped to [`c_int::MAX`], which only ever under-reports an
@@ -99,7 +99,6 @@ pub(crate) enum Input<'a> {
     /// A NUL-terminated string for the text model.
     Text(&'a CStr),
     /// 16 kHz mono PCM for the speech model.
-    #[allow(dead_code, reason = "used by audio completion and Whistle")]
     Audio(&'a [f32]),
 }
 
@@ -144,7 +143,6 @@ pub(crate) struct EncodedAudio {
     word_timestamps: c_int,
 }
 
-#[allow(dead_code, reason = "built by Whistle's TranscribeOptions")]
 impl EncodedAudio {
     /// Settings from their encoded parts.
     pub(crate) fn new(
@@ -157,6 +155,24 @@ impl EncodedAudio {
             keywords,
             word_timestamps: c_int::from(word_timestamps),
         }
+    }
+
+    /// The language code, or `None` to detect it.
+    #[cfg(test)]
+    pub(crate) fn language(&self) -> Option<&CStr> {
+        self.language.as_deref()
+    }
+
+    /// The newline-separated keywords, or `None` for none.
+    #[cfg(test)]
+    pub(crate) fn keywords(&self) -> Option<&CStr> {
+        self.keywords.as_deref()
+    }
+
+    /// Whether word timestamps are asked for.
+    #[cfg(test)]
+    pub(crate) fn word_timestamps(&self) -> bool {
+        self.word_timestamps != 0
     }
 
     /// The `(language, keywords, word_timestamps)` triple, each pointer null or a C string that
@@ -259,7 +275,6 @@ impl Guard {
     }
 
     /// Configures the transcription an audio completion runs for itself.
-    #[allow(dead_code, reason = "used by audio completion")]
     pub(crate) fn set_audio(&mut self, audio: &EncodedAudio) {
         let (language, keywords, word_timestamps) = audio.raw();
         // SAFETY: the guard holds ENGINE, so no other engine call is in flight. Both pointers
@@ -274,7 +289,6 @@ impl Guard {
     ///
     /// Returns [`Error::AudioTooLong`] for a clip over [`MAX_SAMPLES`]; the engine's own
     /// failures come back as a negative count, as in C.
-    #[allow(dead_code, reason = "used by Whistle")]
     pub(crate) fn transcribe(
         &mut self,
         pcm: &[f32],

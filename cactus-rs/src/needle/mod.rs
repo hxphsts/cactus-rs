@@ -25,7 +25,7 @@
 //! use cactus_rs::needle::{Needle, Tool, Weights};
 //! use serde_json::json;
 //!
-//! let mut needle = Needle::builder(Weights::fetch()?)
+//! let mut needle = Needle::builder(Weights::from_file("needle3.cact")?)
 //!     .system("You control the lights.")
 //!     .tool(Tool::new(
 //!         "set_light",

@@ -18,6 +18,10 @@
 //! confidence of zero. A failure is a third shape, `{"type":"error","error":"..."}`, which
 //! [`Completion`]'s [`FromStr`] turns into [`Error::Complete`] rather than a value.
 //!
+//! A turn completed from a speech clip appends the transcript under an `audio_` prefix
+//! (`"audio_text":"Turn on the kitchen light.","audio_language":"en",...`), which
+//! [`Completion::audio`] reads as a [`Transcript`].
+//!
 //! Every field is `#[serde(default)]` and every type is `#[non_exhaustive]`: an engine that grows
 //! a field, or drops one, still parses.
 //!
@@ -38,10 +42,11 @@
 use std::str::FromStr;
 
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::error::{Error, Result};
+use crate::whistle::{Transcript, Word};
 
 /// What the engine decided to do with a turn.
 ///
@@ -428,6 +433,42 @@ pub struct Completion {
     stats: Stats,
     #[serde(default)]
     validation: Validation,
+    #[serde(flatten, deserialize_with = "audio_fields")]
+    audio: Option<Transcript>,
+}
+
+/// The `audio_*` keys an audio turn appends after the text ones, as the engine writes them.
+#[derive(Deserialize)]
+struct AudioFields {
+    #[serde(default)]
+    audio_text: Option<String>,
+    #[serde(default)]
+    audio_language: Option<String>,
+    #[serde(default)]
+    audio_words: Vec<Word>,
+    #[serde(default)]
+    audio_ttft_ms: f32,
+    #[serde(default)]
+    audio_decode_tps: f32,
+}
+
+/// Reads the `audio_*` keys into a [`Transcript`], or `None` for a typed turn, which has neither
+/// `audio_text` nor `audio_language`.
+fn audio_fields<'de, D>(deserializer: D) -> std::result::Result<Option<Transcript>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let fields = AudioFields::deserialize(deserializer)?;
+    if fields.audio_text.is_none() && fields.audio_language.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(Transcript::from_parts(
+        fields.audio_text.unwrap_or_default(),
+        fields.audio_language.unwrap_or_default(),
+        fields.audio_words,
+        fields.audio_ttft_ms,
+        fields.audio_decode_tps,
+    )))
 }
 
 /// The default for a missing `success` field: an envelope that omits it did not fail.
@@ -603,6 +644,38 @@ impl Completion {
     pub const fn validation(&self) -> &Validation {
         &self.validation
     }
+
+    /// What the engine heard, for a turn completed from a speech clip; `None` for a typed one.
+    ///
+    /// Read from the `audio_text`, `audio_language`, `audio_words`, `audio_ttft_ms` and
+    /// `audio_decode_tps` fields an audio turn adds to the envelope. The words are there only
+    /// when word timestamps were asked for.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use cactus_rs::needle::Completion;
+    /// use cactus_rs::whistle::Language;
+    ///
+    /// let completion: Completion = r#"{"type":"call","success":true,
+    ///     "function_calls":[{"name":"set_light","arguments":{"room":"kitchen","on":false}}],
+    ///     "audio_text":"Turn off the kitchen lights.","audio_language":"en",
+    ///     "audio_ttft_ms":113.3,"audio_decode_tps":47.9}"#
+    ///     .parse()?;
+    ///
+    /// let heard = completion.audio().expect("an audio turn");
+    /// assert_eq!(heard.text(), "Turn off the kitchen lights.");
+    /// assert_eq!(heard.language(), Some(Language::En));
+    ///
+    /// let typed: Completion = r#"{"type":"respond"}"#.parse()?;
+    /// assert!(typed.audio().is_none());
+    /// # Ok::<(), cactus_rs::Error>(())
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn audio(&self) -> Option<&Transcript> {
+        self.audio.as_ref()
+    }
 }
 
 /// Parses an engine envelope, turning a reported failure into an error.
@@ -650,6 +723,87 @@ mod tests {
         "reason":null,"function_calls":[],"suppressed_calls":[],"reasoning":null,
         "confidence":0.0,"prefill_tps":1902.1,"decode_tps":794.3,"peak_ram_mb":90.9,
         "validation":{"ungrounded":[],"negation":false}}"#;
+
+    /// The pinned Linux x86_64 engine on `lights_en.wav`, with word timestamps on.
+    const AUDIO: &str = concat!(
+        r#"{"type":"call","success":true,"error":null,"error_code":null,"reason":null,"#,
+        r#""function_calls":[{"name":"set_light","arguments":{"room":"kitchen","on":false}}],"#,
+        r#""suppressed_calls":[],"reasoning":"room 'kitchen' from query; 'off' -> on false.","#,
+        r#""confidence":0.9485,"prefill_tps":41.3,"decode_tps":128.8,"peak_ram_mb":97.1,"#,
+        r#""validation":{"ungrounded":[],"negation":false},"#,
+        r#""audio_text":"Turn off the kitchen lights.","audio_language":"en","audio_words":["#,
+        r#"{"word":"Turn","start":0.16,"end":0.40,"probability":0.850},"#,
+        r#"{"word":"off","start":0.40,"end":0.72,"probability":0.986},"#,
+        r#"{"word":"the","start":0.72,"end":0.96,"probability":0.992},"#,
+        r#"{"word":"kitchen","start":0.96,"end":1.28,"probability":0.976},"#,
+        r#"{"word":"lights.","start":1.28,"end":1.68,"probability":0.990}],"#,
+        r#""audio_ttft_ms":96.0,"audio_decode_tps":63.8}"#,
+    );
+
+    /// The same engine on one second of silence, without word timestamps.
+    const AUDIO_SILENCE: &str = concat!(
+        r#"{"type":"call","success":true,"error":null,"error_code":null,"reason":null,"#,
+        r#""function_calls":[],"suppressed_calls":[],"#,
+        r#""reasoning":"No tool available for smart home control.","confidence":0.9239,"#,
+        r#""prefill_tps":29.6,"decode_tps":157.7,"peak_ram_mb":97.1,"#,
+        r#""audio_text":"","audio_language":"","audio_ttft_ms":0.0,"audio_decode_tps":0.0}"#,
+    );
+
+    #[test]
+    fn an_audio_envelope_carries_its_transcript() {
+        let completion: Completion = AUDIO.parse().expect("the sample envelope parses");
+
+        assert!(completion.kind().is_call());
+        assert_eq!(
+            completion.calls()[0].arguments_json(),
+            r#"{"room":"kitchen","on":false}"#
+        );
+        assert_eq!(completion.stats().decode_tps(), 128.8);
+
+        let heard = completion.audio().expect("an audio turn");
+        assert_eq!(heard.text(), "Turn off the kitchen lights.");
+        assert_eq!(heard.language(), Some(crate::whistle::Language::En));
+        assert_eq!(heard.ttft_ms(), 96.0);
+        assert_eq!(heard.decode_tps(), 63.8);
+        assert_eq!(heard.words().len(), 5);
+        assert_eq!(heard.words()[3].word(), "kitchen");
+        assert_eq!(heard.words()[3].start(), 0.96);
+    }
+
+    #[test]
+    fn a_silent_audio_turn_has_an_empty_transcript() {
+        let completion: Completion = AUDIO_SILENCE.parse().expect("the sample envelope parses");
+        let heard = completion.audio().expect("still an audio turn");
+        assert!(heard.is_empty());
+        assert_eq!(heard.language(), None);
+        assert!(heard.words().is_empty());
+    }
+
+    #[test]
+    fn a_typed_turn_has_no_transcript() {
+        let completion: Completion = CALL.parse().expect("the sample envelope parses");
+        assert!(completion.audio().is_none());
+
+        // Timings alone do not make a transcript.
+        let timings: Completion =
+            r#"{"type":"respond","audio_ttft_ms":1.0}"#.parse().expect("parses");
+        assert!(timings.audio().is_none());
+    }
+
+    #[test]
+    fn a_failed_audio_turn_is_still_an_error() {
+        // The engine merges what it heard even into an error envelope.
+        let envelope = concat!(
+            r#"{"type":"error","error":"needle_init not called","#,
+            r#""audio_text":"Turn off the kitchen lights.","audio_language":"en"}"#,
+        );
+        let error = envelope
+            .parse::<Completion>()
+            .expect_err("an error envelope");
+        assert!(
+            matches!(error, Error::Complete { ref detail } if detail == "needle_init not called")
+        );
+    }
 
     #[test]
     fn a_tool_call_envelope_parses() {

@@ -187,15 +187,8 @@ mod tests {
     /// The pin `needle::Weights::fetch` uses.
     const NEEDLE: Pin = crate::needle::weights::PIN;
 
-    /// A Whistle pin, as the speech model's `fetch` will describe it.
-    const WHISTLE: Pin = Pin {
-        repo: "Cactus-Compute/whistle",
-        revision: "b358ddadd89b7a713b5aa131f23032d3cca1b251",
-        file: "whistle.cact",
-        sha256: "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
-        env: "CACTUS_WHISTLE_WEIGHTS",
-        cache_dir: "whistle",
-    };
+    /// The pin `whistle::Weights::fetch` uses.
+    const WHISTLE: Pin = crate::whistle::weights::PIN;
 
     #[test]
     fn digest_matches_a_known_vector() {

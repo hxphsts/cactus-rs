@@ -95,7 +95,8 @@ unsafe extern "C" {
     ///   call in this module may run concurrently with any other; the caller must serialise
     ///   all of them.
     /// - A text model must have been loaded with [`needle_load`] first, otherwise this call
-    ///   fails.
+    ///   fails. Loading a text archive again, even the same one, discards the configuration:
+    ///   call this again afterwards.
     pub fn needle_init(
         system_prompt: *const c_char,
         tools_json: *const c_char,
@@ -112,7 +113,8 @@ unsafe extern "C" {
     /// Returns a non-negative **token count** on success (not the number of bytes written) and
     /// a negative value on failure, with the reason in [`needle_last_error`]. On failure `out`
     /// also holds a NUL-terminated error envelope carrying the same text, such as
-    /// `{"type":"error","error":"needle_init not called"}`.
+    /// `{"type":"error","error":"needle_init not called"}`. A failed audio completion may still
+    /// carry the `audio_*` fields of a transcription that ran before the failure.
     ///
     /// `out` is always NUL-terminated, and the envelope is **silently truncated** to
     /// `out_capacity - 1` bytes when it does not fit: there is no error and no length hint, so a
@@ -149,7 +151,8 @@ unsafe extern "C" {
     /// [`needle_transcribe`]. The setting is process-global and stays in force until the next
     /// call; the defaults are to detect the language, use no keywords and report no word times.
     /// The engine **copies** both strings, so they may be freed as soon as this returns. It
-    /// cannot fail and returns nothing.
+    /// cannot fail and returns nothing. The setting survives [`needle_reset`] and
+    /// [`needle_init`], and [`needle_transcribe`] ignores it: that function takes its own.
     ///
     /// # Safety
     ///
@@ -172,11 +175,17 @@ unsafe extern "C" {
     /// with times in seconds. Silence and steady noise give an empty `text` and `language`.
     ///
     /// `language` is one of `"en"`, `"de"`, `"fr"`, `"es"`, `"it"`, `"nl"` or `"pl"`, or null to
-    /// detect it. `keywords` is null or newline-separated words and phrases to bias the decoder
-    /// towards.
+    /// detect it. Codes are case-sensitive, the empty string also means detect, and any other
+    /// code fails with `unknown language <code>`. Forcing a language steers the decoder and
+    /// labels the result; it does not translate. `keywords` is null or newline-separated words
+    /// and phrases to bias the decoder towards. An empty clip (`samples` 0, `pcm` non-null) is
+    /// not an error: it gives the silence envelope.
     ///
     /// `out` follows the rules of [`needle_complete`]: always NUL-terminated and **silently
-    /// truncated** when it does not fit.
+    /// truncated** to `out_capacity - 1` bytes when it does not fit, with the token count still
+    /// returned. Unlike [`needle_complete`], an `out_capacity` of `0` or a null `out` fails with
+    /// "no output buffer". A failed call writes no envelope; the reason is only in
+    /// [`needle_last_error`].
     ///
     /// # Safety
     ///
@@ -185,8 +194,8 @@ unsafe extern "C" {
     ///   exceed 480 000 (30 seconds).
     /// - `language` and `keywords` must each be either null or a pointer to a NUL-terminated C
     ///   string valid for the duration of the call.
-    /// - `out` must be valid for writes of `out_capacity` bytes, and `out_capacity` must not be
-    ///   negative or larger than the allocation behind `out`.
+    /// - `out` must be null or valid for writes of `out_capacity` bytes, and `out_capacity`
+    ///   must not be negative or larger than the allocation behind `out`.
     /// - The engine is one process-global, non-thread-safe runtime for both kinds of model; the
     ///   caller must serialise every call in this module.
     /// - A speech model must have been loaded with [`needle_load`] first, otherwise this call
@@ -204,10 +213,13 @@ unsafe extern "C" {
     /// Embeds text or a speech clip, or reports how many floats that takes.
     ///
     /// Exactly one of `input` and `pcm` is non-null. Text yields one vector of the model's
-    /// embedding dimension (3072 for Needle 3); speech yields one row of that width per 80 ms
-    /// frame, flattened. With `out` null, returns that float count without computing anything.
-    /// With a buffer, returns the same count after filling it, or a negative value when
-    /// `out_capacity` is too small or the call fails, with the reason in
+    /// embedding dimension (3072 for Needle 3, and asking with an empty string returns it
+    /// without computing). Speech yields one row of the speech model's width (512 for the
+    /// pinned Whistle, not the text dimension) per 80 ms frame, flattened, with
+    /// `frames = max(1, (samples + 1120) / 1280)`: an empty clip still gives one row. With
+    /// `out` null, returns that float count without computing anything. With a buffer, returns
+    /// the same count after filling it, or a negative value when `out_capacity` is too small or
+    /// the call fails, with the reason in
     /// [`needle_last_error`]. Query the count first and size the buffer from the answer.
     ///
     /// # Safety
@@ -255,7 +267,8 @@ unsafe extern "C" {
     /// **copies** what it needs during the call, so the buffer may be freed as soon as it
     /// returns.
     ///
-    /// Weights cannot be unloaded.
+    /// Weights cannot be unloaded. Loading a text archive again, even the one already loaded,
+    /// discards the [`needle_init`] configuration; the speech model has none to lose.
     ///
     /// # Safety
     ///

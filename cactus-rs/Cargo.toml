@@ -60,18 +60,22 @@ proptest = "1.8"
 [[example]]
 name = "desktop"
 path = "examples/desktop.rs"
+required-features = ["download"]
 
 [[example]]
 name = "lights"
 path = "examples/lights.rs"
+required-features = ["download"]
 
 [[example]]
 name = "extract"
 path = "examples/extract.rs"
+required-features = ["download"]
 
 [[example]]
 name = "embed"
 path = "examples/embed.rs"
+required-features = ["download"]
 
 [[example]]
 name = "custom_weights"

@@ -39,6 +39,7 @@
 //! use cactus_rs::needle::{Needle, Tool, Weights};
 //! use serde_json::json;
 //!
+//! # #[cfg(feature = "download")]
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let weights = Weights::fetch()?; // cached under ~/.cache/cactus-rs
 //!     let mut needle = Needle::builder(weights)
@@ -60,6 +61,8 @@
 //!     }
 //!     Ok(())
 //! }
+//! # #[cfg(not(feature = "download"))]
+//! # fn main() {}
 //! ```
 //!
 //! That prints `set_light {"room":"kitchen","on":true}`.
@@ -79,7 +82,7 @@
 //!     on: bool,
 //! }
 //!
-//! let mut needle = Needle::builder(Weights::fetch()?).build()?;
+//! let mut needle = Needle::builder(Weights::from_file("needle3.cact")?).build()?;
 //! let completion = needle.complete("turn the kitchen light on")?;
 //!
 //! for call in completion.calls() {
@@ -98,7 +101,7 @@
 //!
 //! ```no_run
 //! # use cactus_rs::needle::{Needle, Weights};
-//! # let mut needle = Needle::builder(Weights::fetch()?).build()?;
+//! # let mut needle = Needle::builder(Weights::from_file("needle3.cact")?).build()?;
 //! let completion = needle.complete("do not turn the kitchen light on")?;
 //!
 //! for call in completion.grounded_calls() {
@@ -114,7 +117,7 @@
 //!
 //! ```no_run
 //! # use cactus_rs::needle::{Needle, Weights};
-//! let mut needle = Needle::builder(Weights::fetch()?).build()?;
+//! let mut needle = Needle::builder(Weights::from_file("needle3.cact")?).build()?;
 //!
 //! let kitchen = needle.embed("kitchen")?;
 //! assert_eq!(kitchen.len(), needle.embedding_dimension()?);
@@ -128,7 +131,7 @@
 //!
 //! ```no_run
 //! # use cactus_rs::needle::{Needle, Weights};
-//! # let mut needle = Needle::builder(Weights::fetch()?).build()?;
+//! # let mut needle = Needle::builder(Weights::from_file("needle3.cact")?).build()?;
 //! needle.complete("turn the kitchen light on")?;
 //! needle.complete("now the hall")?; // the engine still remembers the kitchen
 //! needle.reset(); // it no longer does
@@ -214,6 +217,7 @@ pub mod error;
 mod ffi;
 mod model;
 pub mod needle;
+pub mod whistle;
 
 pub use error::{Error, Result};
 pub use model::Model;
