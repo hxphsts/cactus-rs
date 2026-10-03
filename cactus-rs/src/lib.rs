@@ -174,13 +174,14 @@
 //!
 //! ## Safety Guarantees
 //!
-//! - Every `unsafe` block in the crate is in [`needle::engine`], and each one carries a
-//!   `// SAFETY:` comment naming the contract it satisfies
+//! - All `unsafe` lives in the crate's private FFI layer, and each block carries a `// SAFETY:`
+//!   comment naming the lock it holds and the contract it satisfies. Every engine call takes one
+//!   process-wide lock, so a Needle and a Whistle on different threads never overlap
 //! - Only one [`Needle`](needle::Needle) exists per process: a second
 //!   [`build`](needle::NeedleBuilder::build) returns [`Error::EngineBusy`] rather than calling
 //!   into an engine someone else is using
-//! - Every method that reaches the engine takes `&mut self`, so its calls cannot overlap.
-//!   [`Needle`](needle::Needle) is [`Send`] and [`Sync`]; sharing it still means a lock
+//! - Every method that reaches the engine takes `&mut self`, so one conversation's turns stay in
+//!   order. [`Needle`](needle::Needle) is [`Send`] and [`Sync`]; sharing it still means a lock
 //! - Weights are validated by magic tag before the engine sees them, and a second, different
 //!   archive returns [`Error::WeightsAlreadyLoaded`] instead of being silently ignored
 //! - Strings crossing the FFI boundary are rejected for interior NUL bytes rather than being
@@ -206,7 +207,13 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![warn(missing_docs)]
 
+mod archive;
+#[cfg(feature = "download")]
+mod download;
 pub mod error;
+mod ffi;
+mod model;
 pub mod needle;
 
 pub use error::{Error, Result};
+pub use model::Model;

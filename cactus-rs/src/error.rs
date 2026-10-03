@@ -3,12 +3,16 @@
 //! ## Overview
 //!
 //! One [`Error`] enum covers the whole crate, and [`Result<T>`] is the alias every fallible
-//! function returns. The variants split into four groups:
+//! function returns. The variants split into five groups:
 //!
-//! - **Engine ownership**: [`Error::EngineBusy`], [`Error::WeightsAlreadyLoaded`]: the engine is
-//!   one process-global model, so these report a rule of the C API rather than a failure
+//! - **Engine ownership**: [`Error::EngineBusy`], [`Error::WeightsAlreadyLoaded`],
+//!   [`Error::WrongModel`]: the engine is one process-global runtime holding one model per kind,
+//!   so these report a rule of the C API rather than a failure
 //! - **Engine calls**: [`Error::Load`], [`Error::Init`], [`Error::Complete`],
 //!   [`Error::Truncated`], [`Error::Embed`], [`Error::InteriorNul`]
+//! - **Audio**: [`Error::SpeechModelNotLoaded`], [`Error::AudioTooLong`],
+//!   [`Error::NonFiniteSample`], [`Error::Transcribe`], [`Error::EmbedAudio`],
+//!   [`Error::UnsupportedLanguage`], [`Error::InvalidKeyword`]
 //! - **Encoding and decoding**: [`Error::Tools`], [`Error::Envelope`], [`Error::Arguments`]
 //! - **Weights acquisition**: [`Error::UnsupportedWeights`], [`Error::Io`], [`Error::Download`],
 //!   [`Error::ChecksumMismatch`]
@@ -26,6 +30,8 @@
 //! ```
 
 use thiserror::Error as ThisError;
+
+use crate::model::Model;
 
 /// The number of bytes of a bad engine envelope kept in [`Error::Envelope`].
 ///
@@ -50,31 +56,51 @@ const ENVELOPE_EXCERPT: usize = 200;
 #[derive(Debug, ThisError)]
 #[non_exhaustive]
 pub enum Error {
-    /// Another [`Needle`](crate::needle::Needle) is alive in this process.
+    /// Another instance of the same model is alive in this process: a second
+    /// [`Needle`](crate::needle::Needle) while one exists, or a second Whistle while one exists.
     #[error(
-        "the Needle engine is already in use by another instance in this process\n\
-         The engine is one process-global model with no handles, so only one Needle can exist \
-         at a time.\n\
-         Help: drop the existing Needle before building another, or share it behind a mutex."
+        "the engine slot for this model is already in use by another instance in this process\n\
+         The engine is one process-global runtime with no handles that holds one model per \
+         kind, so one Needle and one Whistle can exist at a time, not two of either.\n\
+         Help: drop the existing instance before building another of the same model, or share \
+         it behind a mutex."
     )]
     EngineBusy,
 
-    /// Weights were already loaded, and the new archive is a different one.
+    /// Weights of the same kind were already loaded, and the new archive is a different one.
     #[error(
-        "different weights are already loaded in this process\n\
-         The engine copies the archive on the first load and offers no way to unload it.\n\
-         Help: build every Needle from the same weights, or run the second model in its own \
-         process."
+        "different weights of the same kind are already loaded in this process\n\
+         The engine copies the archive on the first load of each kind and offers no way to \
+         unload it.\n\
+         Help: build every instance of a model from the same weights, or run the second archive \
+         in its own process."
     )]
     WeightsAlreadyLoaded,
 
-    /// The archive is not a Needle 3 `.cact` file.
+    /// The engine loaded the archive as the other kind of model than the one being built.
+    ///
+    /// Needle 3 and Whistle archives carry the same magic tag, so only the engine can tell them
+    /// apart. By the time it has, the archive is loaded: it stays in the process as the other
+    /// model, exactly as if it had been handed to that model's builder.
     #[error(
-        "unsupported weights: magic tag {tag:#010X} is not a Needle 3 archive\n\
-         Needle 3 archives start with the little-endian tag 0x05E12A84; 0x05E12A83 is a \
-         Needle 2 archive, which the linked engine cannot read.\n\
-         Help: download needle3.cact from the Cactus-Compute/needle3 repository, or call \
-         Weights::fetch()."
+        "the weights are not a {expected} archive\n\
+         Needle 3 and Whistle archives share one magic tag, and the engine read this one as the \
+         other model; it stays loaded as that model for the life of the process.\n\
+         Help: build a {expected} from {}, and hand this archive to the other model's builder.",
+        .expected.archive()
+    )]
+    WrongModel {
+        /// The model that was being built.
+        expected: Model,
+    },
+
+    /// The archive is not a Needle 3 or Whistle `.cact` file.
+    #[error(
+        "unsupported weights: magic tag {tag:#010X} is not a Needle 3 or Whistle archive\n\
+         Needle 3 and Whistle archives start with the little-endian tag 0x05E12A84; 0x05E12A83 \
+         is a Needle 2 archive, which the linked engine cannot read.\n\
+         Help: download needle3.cact from Cactus-Compute/needle3 or whistle.cact from \
+         Cactus-Compute/whistle, or call Weights::fetch()."
     )]
     UnsupportedWeights {
         /// The little-endian `u32` read from the first four bytes of the archive.
@@ -82,10 +108,12 @@ pub enum Error {
     },
 
     /// `needle_load` rejected the archive.
+    ///
+    /// The engine's own reason is not kept: the variant has no field for it.
     #[error(
         "the engine rejected the weight archive\n\
-         The magic tag was right but the engine could not load the bytes, which usually means a \
-         truncated or corrupted download.\n\
+         The magic tag was right but the engine could not load the bytes as a Needle 3 or \
+         Whistle model, which usually means a truncated or corrupted download.\n\
          Help: delete the cached archive and fetch it again, or verify its SHA-256."
     )]
     Load,
@@ -112,8 +140,9 @@ pub enum Error {
     /// The engine filled the output buffer and silently cut the envelope short.
     #[error(
         "the engine truncated its response to fill the {capacity} byte output buffer\n\
-         needle_complete truncates without reporting it, so the JSON envelope is incomplete.\n\
-         Help: lower max_new_tokens, or ask for fewer tool calls in one turn."
+         The engine truncates without reporting it, so the JSON envelope is incomplete.\n\
+         Help: lower max_new_tokens, ask for fewer tool calls in one turn, or turn word \
+         timestamps off."
     )]
     Truncated {
         /// The capacity of the output buffer, in bytes, that the response filled.
@@ -136,8 +165,88 @@ pub enum Error {
          Help: strip '\\0' from the {field} before passing it in."
     )]
     InteriorNul {
-        /// Which input held the NUL: `"system prompt"`, `"tools"`, `"input"` or `"tool index"`.
+        /// Which input held the NUL: `"system prompt"`, `"tools"`, `"input"`, `"tool index"` or
+        /// `"keywords"`.
         field: &'static str,
+    },
+
+    /// An audio completion was asked for, and no speech model is loaded.
+    #[error(
+        "no speech model is loaded in this process\n\
+         An audio completion transcribes the clip with Whistle before Needle answers it, and \
+         the engine holds no Whistle weights yet.\n\
+         Help: build a Whistle once in this process before completing audio; its weights stay \
+         loaded after it is dropped."
+    )]
+    SpeechModelNotLoaded,
+
+    /// The clip is longer than the engine accepts.
+    #[error(
+        "the clip is {samples} samples long, more than the 480000 the engine accepts\n\
+         The engine takes at most 30 seconds of 16 kHz mono audio in one call.\n\
+         Help: split the clip into chunks of at most 30 seconds and send them one at a time."
+    )]
+    AudioTooLong {
+        /// The number of samples in the clip.
+        samples: usize,
+    },
+
+    /// A sample of the clip is NaN or infinite.
+    #[error(
+        "sample {index} of the clip is not a finite number\n\
+         The engine expects 16 kHz mono PCM in [-1, 1], and a NaN or an infinity would poison \
+         every frame it touches.\n\
+         Help: check the decoder or resampler that produced the clip, or replace non-finite \
+         samples with 0.0."
+    )]
+    NonFiniteSample {
+        /// The position of the first non-finite sample.
+        index: usize,
+    },
+
+    /// `needle_transcribe` failed, with the engine's reason.
+    #[error(
+        "the engine failed to transcribe the clip: {detail}\n\
+         Help: check that the clip is 16 kHz mono PCM in [-1, 1], and that the Whistle weights \
+         loaded successfully."
+    )]
+    Transcribe {
+        /// The engine's own reason, from `needle_last_error`.
+        detail: String,
+    },
+
+    /// `needle_embed` failed on a clip, with the engine's reason.
+    #[error(
+        "the engine failed to embed the clip: {detail}\n\
+         Help: check that the clip is 16 kHz mono PCM in [-1, 1], and that the Whistle weights \
+         loaded successfully."
+    )]
+    EmbedAudio {
+        /// The engine's own reason, from `needle_last_error`.
+        detail: String,
+    },
+
+    /// A language code is not one Whistle transcribes.
+    #[error(
+        "unsupported language {code:?}\n\
+         Whistle transcribes English, German, French, Spanish, Italian, Dutch and Polish.\n\
+         Help: use one of en, de, fr, es, it, nl or pl, or leave the language unset to detect it."
+    )]
+    UnsupportedLanguage {
+        /// The code that was given.
+        code: String,
+    },
+
+    /// A keyword holds a line break.
+    #[error(
+        "the keyword {keyword:?} contains a line break\n\
+         Keywords reach the engine as one newline-separated list, so a line break inside one \
+         would silently split it in two.\n\
+         Help: pass each word or phrase as its own keyword."
+    )]
+    InvalidKeyword {
+        /// The keyword as it was given.
+        keyword: String,
     },
 
     /// The engine's response was not the JSON envelope this crate expects.
@@ -188,7 +297,8 @@ pub enum Error {
     /// Downloading the weight archive failed.
     #[error(
         "could not download weights from {url}: {detail}\n\
-         Help: retry, or download the archive by hand and point CACTUS_NEEDLE_WEIGHTS at it."
+         Help: retry, or download the archive by hand and point CACTUS_NEEDLE_WEIGHTS (Needle) \
+         or CACTUS_WHISTLE_WEIGHTS (Whistle) at it."
     )]
     Download {
         /// The URL that was being fetched.
@@ -263,37 +373,134 @@ mod tests {
         assert_bounds::<Error>();
     }
 
-    #[test]
-    fn every_message_ends_with_a_help_line() {
-        let messages = [
-            Error::EngineBusy.to_string(),
-            Error::WeightsAlreadyLoaded.to_string(),
-            Error::UnsupportedWeights { tag: 0 }.to_string(),
-            Error::Load.to_string(),
-            Error::Init.to_string(),
+    /// How many variants [`Error`] has. Bump it with a new arm in [`variant_index`].
+    const VARIANTS: usize = 23;
+
+    /// A distinct number per variant.
+    ///
+    /// The `match` has no `_` arm, so a new variant does not compile until it is listed here,
+    /// and [`every_message_ends_with_a_help_line`] fails until it has a sample.
+    fn variant_index(error: &Error) -> usize {
+        match error {
+            Error::EngineBusy => 0,
+            Error::WeightsAlreadyLoaded => 1,
+            Error::WrongModel { .. } => 2,
+            Error::UnsupportedWeights { .. } => 3,
+            Error::Load => 4,
+            Error::Init => 5,
+            Error::Complete { .. } => 6,
+            Error::Truncated { .. } => 7,
+            Error::Embed => 8,
+            Error::InteriorNul { .. } => 9,
+            Error::SpeechModelNotLoaded => 10,
+            Error::AudioTooLong { .. } => 11,
+            Error::NonFiniteSample { .. } => 12,
+            Error::Transcribe { .. } => 13,
+            Error::EmbedAudio { .. } => 14,
+            Error::UnsupportedLanguage { .. } => 15,
+            Error::InvalidKeyword { .. } => 16,
+            Error::Envelope { .. } => 17,
+            Error::Arguments { .. } => 18,
+            Error::Tools { .. } => 19,
+            Error::Io(_) => 20,
+            Error::Download { .. } => 21,
+            Error::ChecksumMismatch { .. } => 22,
+        }
+    }
+
+    /// One value of every variant.
+    fn samples() -> Vec<Error> {
+        let json = || serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        vec![
+            Error::EngineBusy,
+            Error::WeightsAlreadyLoaded,
+            Error::WrongModel {
+                expected: Model::Needle,
+            },
+            Error::WrongModel {
+                expected: Model::Whistle,
+            },
+            Error::UnsupportedWeights { tag: 0 },
+            Error::Load,
+            Error::Init,
             Error::Complete {
                 detail: "x".to_owned(),
-            }
-            .to_string(),
-            Error::Truncated { capacity: 1 }.to_string(),
-            Error::Embed.to_string(),
-            Error::InteriorNul { field: "input" }.to_string(),
+            },
+            Error::Truncated { capacity: 1 },
+            Error::Embed,
+            Error::InteriorNul { field: "input" },
+            Error::InteriorNul { field: "keywords" },
+            Error::SpeechModelNotLoaded,
+            Error::AudioTooLong { samples: 480_001 },
+            Error::NonFiniteSample { index: 7 },
+            Error::Transcribe {
+                detail: "x".to_owned(),
+            },
+            Error::EmbedAudio {
+                detail: "x".to_owned(),
+            },
+            Error::UnsupportedLanguage {
+                code: "xx".to_owned(),
+            },
+            Error::InvalidKeyword {
+                keyword: "a\nb".to_owned(),
+            },
+            Error::envelope("{", json()),
+            Error::Arguments { source: json() },
+            Error::Tools { source: json() },
+            Error::Io(std::io::Error::other("x")),
             Error::Download {
                 url: "u".to_owned(),
                 detail: "d".to_owned(),
-            }
-            .to_string(),
+            },
             Error::ChecksumMismatch {
                 expected: "a".to_owned(),
                 actual: "b".to_owned(),
-            }
-            .to_string(),
-        ];
+            },
+        ]
+    }
 
-        for message in messages {
+    #[test]
+    fn every_message_ends_with_a_help_line() {
+        let samples = samples();
+
+        let mut covered = [false; VARIANTS];
+        for error in &samples {
+            covered[variant_index(error)] = true;
+        }
+        assert!(
+            covered.iter().all(|seen| *seen),
+            "a variant has no sample: {covered:?}"
+        );
+
+        for error in samples {
+            let message = error.to_string();
             let last = message.lines().last().unwrap_or_default();
             assert!(last.starts_with("Help: "), "no help line in: {message}");
+            // What happened, then why or what to do: never a bare one-liner.
+            assert!(message.lines().count() >= 2, "one line only: {message}");
         }
+    }
+
+    #[test]
+    fn wrong_model_names_both_the_model_and_its_archive() {
+        let message = Error::WrongModel {
+            expected: Model::Whistle,
+        }
+        .to_string();
+        assert!(message.starts_with("the weights are not a Whistle archive"));
+        assert!(message.contains("whistle.cact"));
+    }
+
+    #[test]
+    fn download_help_names_both_variables() {
+        let message = Error::Download {
+            url: "u".to_owned(),
+            detail: "d".to_owned(),
+        }
+        .to_string();
+        assert!(message.contains("CACTUS_NEEDLE_WEIGHTS"));
+        assert!(message.contains("CACTUS_WHISTLE_WEIGHTS"));
     }
 
     #[test]

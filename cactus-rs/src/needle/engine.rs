@@ -2,23 +2,27 @@
 //!
 //! ## Overview
 //!
-//! The C API has no handles. There is one model per process, it is not thread-safe, and its
-//! weights can never be unloaded. [`Needle`] is that singleton expressed as a Rust value:
+//! The C API has no handles. There is one text model per process, the runtime is not
+//! thread-safe, and its weights can never be unloaded. [`Needle`] is that singleton expressed as
+//! a Rust value:
 //!
 //! - **One per process.** [`NeedleBuilder::build`] takes the engine and returns
 //!   [`Error::EngineBusy`] while another [`Needle`] is alive. Dropping one frees the slot.
 //!   A second `build()` after that succeeds, and starts from a fresh conversation.
 //! - **Weights are permanent.** The first successful load owns the process. Building again from
 //!   the same archive reuses it; a different archive returns [`Error::WeightsAlreadyLoaded`].
-//! - **Calls do not overlap.** Every method takes `&mut self`, which is what makes the engine's
-//!   lack of thread safety a compile error rather than a crash. [`Needle`] is [`Send`], so it can
-//!   move to another thread, and not [`Sync`], so it cannot be shared with one.
+//! - **Calls do not overlap.** Every engine call takes one process-wide lock, so a [`Needle`]
+//!   and a Whistle on different threads never overlap. Methods that reach the engine also take
+//!   `&mut self`, because a conversation is one sequence of turns. [`Needle`] is [`Send`] and
+//!   [`Sync`]: it can move to another thread, and a shared `&Needle` can only read
+//!   [`Needle::prefix_tokens`].
 //! - **No streaming.** [`Needle::complete`] returns when the turn is finished. There is no token
 //!   callback in the C API to expose.
 //! - **The conversation accumulates.** Each `complete` appends a turn, so later turns see earlier
 //!   ones until [`Needle::reset`] rewinds to the prefix that [`NeedleBuilder::build`] set up.
 //!
-//! This is the only module in the crate with `unsafe` in it.
+//! This module has no `unsafe` in it: all of the crate's lives in its private FFI layer, which
+//! also holds the lock.
 //!
 //! ## Usage
 //!
@@ -45,23 +49,15 @@
 //! # Ok::<(), cactus_rs::Error>(())
 //! ```
 
-use std::ffi::{CString, c_char, c_int, c_ulonglong};
+use std::ffi::{CString, c_int};
 use std::fmt;
 use std::path::PathBuf;
-use std::ptr;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::completion::Completion;
 use super::tool::Tool;
 use super::weights::Weights;
 use crate::error::{Error, Result};
-
-/// Whether a [`Needle`] is alive in this process.
-static ENGINE_TAKEN: AtomicBool = AtomicBool::new(false);
-
-/// Fingerprint of the weights the engine loaded, set once and never cleared.
-static LOADED: OnceLock<u64> = OnceLock::new();
+use crate::ffi::{self, Input, Kind, Slot};
 
 /// Default token budget for one turn.
 const DEFAULT_MAX_NEW_TOKENS: u32 = 256;
@@ -72,81 +68,6 @@ const MIN_OUTPUT_CAPACITY: usize = 64 * 1024;
 
 /// Bytes of envelope kept when the engine reports a failure in prose rather than JSON.
 const DETAIL_EXCERPT: usize = 200;
-
-/// Exclusive claim on the process-global engine, released on drop.
-///
-/// It exists so that an error between taking the engine and building the [`Needle`] still frees
-/// the slot: the guard is dropped on the way out of `build()` whichever path is taken.
-struct Slot;
-
-impl Slot {
-    /// Takes the engine, or reports that someone else has it.
-    fn take() -> Result<Self> {
-        match ENGINE_TAKEN.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => Ok(Slot),
-            Err(_) => Err(Error::EngineBusy),
-        }
-    }
-}
-
-impl Drop for Slot {
-    fn drop(&mut self) {
-        ENGINE_TAKEN.store(false, Ordering::Release);
-    }
-}
-
-/// Word-wise FNV-1a over the archive, enough to tell two weight files apart.
-///
-/// A 64-bit non-cryptographic hash, so this is not a security check (the archive has already
-/// been verified by whoever produced it),
-/// only a way to answer "are these the bytes already loaded?" without keeping 35 MB alive or
-/// depending on a hash crate the `download` feature happens to pull in.
-fn fingerprint(bytes: &[u8]) -> u64 {
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-
-    // Eight bytes per round rather than one: every `build()` pays for this pass over a 35 MB
-    // archive, and byte-at-a-time FNV made it the slowest step of building a `Needle`.
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64 ^ bytes.len() as u64;
-    let mut words = bytes.chunks_exact(8);
-    for word in &mut words {
-        let mut buffer = [0u8; 8];
-        buffer.copy_from_slice(word);
-        hash = (hash ^ u64::from_le_bytes(buffer)).wrapping_mul(PRIME);
-    }
-    for byte in words.remainder() {
-        hash = (hash ^ u64::from(*byte)).wrapping_mul(PRIME);
-    }
-    hash
-}
-
-/// Loads `weights` unless the same archive is already in the engine.
-///
-/// The caller must hold the [`Slot`], which is what makes the load non-concurrent.
-fn load_once(slot: &Slot, weights: &Weights) -> Result<()> {
-    let _ = slot;
-    let wanted = fingerprint(weights.as_bytes());
-
-    if let Some(loaded) = LOADED.get() {
-        return if *loaded == wanted {
-            Ok(())
-        } else {
-            Err(Error::WeightsAlreadyLoaded)
-        };
-    }
-
-    let bytes = weights.as_bytes();
-    // SAFETY: `bytes` is valid for reads of `bytes.len()` bytes for the whole call, and the
-    // caller holds the engine slot, so no other engine call can be in flight. The engine copies
-    // what it needs before returning, so the archive may be dropped afterwards.
-    let rc = unsafe { cactus_sys::needle_load(bytes.as_ptr(), bytes.len() as c_ulonglong) };
-    if rc < 0 {
-        return Err(Error::Load);
-    }
-
-    // Only the slot holder reaches this line, so the set cannot lose a race.
-    let _ = LOADED.set(wanted);
-    Ok(())
-}
 
 /// Turns a Rust string into a C string, naming the field when it holds an interior NUL.
 fn c_string(text: &str, field: &'static str) -> Result<CString> {
@@ -371,9 +292,11 @@ impl NeedleBuilder {
     /// system prompt, the tool declarations or the tool index path contain a NUL byte, and
     /// [`Error::Init`] when the engine cannot build the prefix.
     pub fn build(self) -> Result<Needle> {
-        // Taken first: the guard releases the engine on every path out of this function.
-        let slot = Slot::take()?;
-        load_once(&slot, &self.weights)?;
+        // Taken first: the slot releases the engine on every path out of this function. It is
+        // declared before the guard so that it drops after it: `Slot`'s `Drop` takes the lock.
+        let slot = Slot::take(Kind::Text)?;
+        let mut guard = ffi::lock();
+        slot.load(&mut guard, self.weights.as_bytes())?;
         // The engine copied the archive; 35 MB need not stay resident on our side.
         drop(self.weights);
 
@@ -394,15 +317,7 @@ impl NeedleBuilder {
             .map(|path| c_string(&path.to_string_lossy(), "tool index"))
             .transpose()?;
 
-        let system_ptr = system.as_ref().map_or(ptr::null(), |text| text.as_ptr());
-        let index_ptr = tool_index
-            .as_ref()
-            .map_or(ptr::null(), |text| text.as_ptr());
-
-        // SAFETY: the three pointers are either null or point at NUL-terminated C strings that
-        // outlive the call, weights are loaded, and the slot guard means no other engine call is
-        // in flight.
-        let rc = unsafe { cactus_sys::needle_init(system_ptr, tools.as_ptr(), index_ptr) };
+        let rc = guard.init(system.as_deref(), &tools, tool_index.as_deref());
         if rc <= 0 {
             return Err(Error::Init);
         }
@@ -433,10 +348,10 @@ impl NeedleBuilder {
 /// # Ok::<(), cactus_rs::Error>(())
 /// ```
 ///
-/// A `Needle` is [`Send`] and [`Sync`]. Neither makes the engine concurrent: every method that
-/// reaches it takes `&mut self`, so calls are serialised by the borrow checker, or by whatever lock
-/// the value is shared behind. A shared `&Needle` can read [`Needle::prefix_tokens`] and nothing
-/// else.
+/// A `Needle` is [`Send`] and [`Sync`]. Neither makes the engine concurrent: every engine call
+/// takes one process-wide lock, and every method that reaches the engine takes `&mut self`, so a
+/// conversation's turns stay in order. A shared `&Needle` can read [`Needle::prefix_tokens`] and
+/// nothing else.
 ///
 /// ```rust
 /// fn assert_send_sync<T: Send + Sync>() {}
@@ -451,10 +366,11 @@ pub struct Needle {
     dimension: Option<usize>,
 }
 
-// `Needle` is `Send + Sync` by auto trait, and both rest on one rule that the compiler cannot
-// check: EVERY METHOD THAT CALLS INTO `cactus_sys` TAKES `&mut self`. The header's only requirement
-// is that engine calls never overlap; `&mut self` makes overlap impossible however the value is
-// moved or shared, and a `&self` method that called the engine would turn `Sync` into a data race.
+// `Needle` is `Send + Sync` by auto trait. The header's only requirement is that engine calls
+// never overlap, and the crate's FFI layer enforces that itself: every C call happens under its
+// one process-wide lock, whichever model or thread it comes from. `&mut self` on the methods that
+// reach the engine keeps one conversation's turns in order; it is no longer what soundness rests
+// on.
 //
 // `Send` also needs the engine to have no thread affinity. The archive references thread-local
 // symbols, so that was checked rather than assumed: against the pinned macOS arm64 archive, load +
@@ -539,27 +455,15 @@ impl Needle {
     {
         let input = c_string(input.as_ref(), "input")?;
         let capacity = options.output_capacity();
+        let budget = c_int::try_from(options.max_new_tokens()).unwrap_or(c_int::MAX);
 
         self.out.resize(capacity, 0);
         // The engine NUL-terminates what it writes; clearing the first byte means a call that
         // writes nothing at all reads back as empty rather than as the previous turn.
         self.out[0] = 0;
 
-        let budget = c_int::try_from(options.max_new_tokens()).unwrap_or(c_int::MAX);
-        let out_capacity = c_int::try_from(capacity).unwrap_or(c_int::MAX);
-
-        // SAFETY: `input` is a NUL-terminated C string that outlives the call, `self.out` is
-        // valid for writes of `capacity` bytes and `out_capacity` is that same length as an
-        // `int`. `&mut self` means no other engine call is in flight, and
-        // `build()` proved the weights are loaded and the prefix initialised.
-        let rc = unsafe {
-            cactus_sys::needle_complete(
-                input.as_ptr(),
-                budget,
-                self.out.as_mut_ptr().cast::<c_char>(),
-                out_capacity,
-            )
-        };
+        let mut guard = ffi::lock();
+        let rc = guard.complete(Input::Text(&input), budget, &mut self.out)?;
 
         let end = self
             .out
@@ -569,10 +473,18 @@ impl Needle {
         let text = String::from_utf8_lossy(&self.out[..end]);
 
         if rc < 0 {
+            // The envelope carries the engine's words; when it is empty, the error slot may
+            // still, and it must be copied before the lock is released.
+            let detail = if text.is_empty() {
+                Some(guard.last_error()).filter(|reason| !reason.is_empty())
+            } else {
+                None
+            };
             return Err(Error::Complete {
-                detail: failure_detail(&text),
+                detail: detail.unwrap_or_else(|| failure_detail(&text)),
             });
         }
+        drop(guard);
 
         // The engine truncates to `capacity - 1` bytes and says nothing; a full buffer is the
         // only signal there is. `>=` also covers a buffer it filled without terminating.
@@ -611,12 +523,7 @@ impl Needle {
         let input = c_string(input.as_ref(), "input")?;
 
         let mut vector = vec![0.0_f32; dimension];
-        let capacity = c_int::try_from(dimension).unwrap_or(c_int::MAX);
-
-        // SAFETY: `input` is a NUL-terminated C string that outlives the call, and `vector` is
-        // valid for writes of `dimension` floats, which is what `capacity` says. `&mut self`
-        // serialises this against every other engine call.
-        let rc = unsafe { cactus_sys::needle_embed(input.as_ptr(), vector.as_mut_ptr(), capacity) };
+        let rc = ffi::lock().embed(Input::Text(&input), &mut vector)?;
         // Success is the dimension coming back; anything else means the vector was not filled.
         if usize::try_from(rc) != Ok(dimension) {
             return Err(Error::Embed);
@@ -645,9 +552,11 @@ impl Needle {
             return Ok(dimension);
         }
 
-        // SAFETY: a null buffer with capacity zero is the documented way to ask for the
-        // dimension without computing anything, and `&mut self` serialises the call.
-        let rc = unsafe { cactus_sys::needle_embed(ptr::null(), ptr::null_mut(), 0) };
+        // A null buffer is the documented way to ask for the count without computing anything.
+        // The engine needs one input, and an empty text is the cheapest one there is.
+        // TODO(probe b): confirm the empty text yields the dimension; if it is refused, ask with
+        // `c"kitchen"` instead.
+        let rc = ffi::lock().embed_len(Input::Text(c""))?;
         let dimension = usize::try_from(rc).map_err(|_| Error::Embed)?;
         if dimension == 0 {
             return Err(Error::Embed);
@@ -672,9 +581,7 @@ impl Needle {
     /// # Ok::<(), cactus_rs::Error>(())
     /// ```
     pub fn reset(&mut self) {
-        // SAFETY: `&mut self` means no other engine call is in flight, which is this function's
-        // only requirement.
-        unsafe { cactus_sys::needle_reset() };
+        ffi::lock().reset();
     }
 
     /// How many tokens the conversation prefix costs.
@@ -719,10 +626,10 @@ fn failure_detail(text: &str) -> String {
 /// Rewinds the conversation, then frees the engine for the next [`NeedleBuilder::build`].
 impl Drop for Needle {
     fn drop(&mut self) {
-        // SAFETY: `&mut self` in `drop` means no other engine call is in flight. The slot is
-        // released afterwards, when the `Slot` field drops, so nothing can take the engine in
-        // between.
-        unsafe { cactus_sys::needle_reset() };
+        // The guard is a temporary, released at the end of this statement. The slot is released
+        // afterwards, when the `Slot` field drops (taking the lock again), so nothing can take
+        // the text model in between.
+        ffi::lock().reset();
     }
 }
 
@@ -740,7 +647,8 @@ impl fmt::Debug for Needle {
 mod tests {
     use super::*;
 
-    // Sound only while every engine call takes `&mut self`; see the note above `impl Needle`.
+    // Sound because every engine call takes the FFI layer's lock; see the note above
+    // `impl Needle`.
     #[test]
     fn test_needle_is_send_and_sync() {
         fn assert_bounds<T: Send + Sync>() {}
@@ -772,13 +680,6 @@ mod tests {
             .with_max_new_tokens(u32::MAX)
             .output_capacity();
         assert_eq!(capacity, i32::MAX as usize);
-    }
-
-    #[test]
-    fn different_archives_fingerprint_differently() {
-        assert_ne!(fingerprint(b"needle-a"), fingerprint(b"needle-b"));
-        assert_ne!(fingerprint(b"needle"), fingerprint(b"needle\0"));
-        assert_eq!(fingerprint(b"needle"), fingerprint(b"needle"));
     }
 
     #[test]
