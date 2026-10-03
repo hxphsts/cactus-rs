@@ -1,25 +1,28 @@
 //! What the engine costs, measured through the safe API.
 //!
-//! Three groups, in the order they must run:
+//! Four groups, the first three in the order they must run:
 //!
 //! - `complete`: one tool-call turn, rewound first, which is the loop a request handler runs
 //! - `embed`: one short phrase through the same loaded model
 //! - `prefix`: [`NeedleBuilder::build`] and the matching drop, swept over the number of tools,
 //!   which is the standing cost paid once per process rather than per turn
+//! - `transcribe`: Whistle on the vendored 11 second `jfk.wav`
 //!
 //! The engine is one process-global model, so the whole run shares a single [`Needle`] for the
 //! first two groups and drops it before the third, which builds and drops its own.
 //!
 //! Every iteration is tens of milliseconds, so the sample size is ten and the measurement window
 //! short. Run it with `cargo bench -p cactus-rs -- --quick`, and set `CACTUS_NEEDLE_WEIGHTS` to a
-//! local `needle3.cact`; with no archive to hand the benchmarks print a line and do nothing,
-//! because a benchmark run is not a reason to download 35 MB.
+//! local `needle3.cact` and `CACTUS_WHISTLE_WEIGHTS` to a local `whistle.cact`; a group with no
+//! archive to hand prints a line and does nothing, because a benchmark run is not a reason to
+//! download anything.
 
 use std::env;
 use std::hint::black_box;
 use std::time::Duration;
 
 use cactus_rs::needle::{Needle, Tool, Weights};
+use cactus_rs::whistle::{self, Whistle};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use serde_json::json;
 
@@ -106,12 +109,38 @@ fn engine_benchmarks(c: &mut Criterion) {
     group.finish();
 }
 
+fn speech_benchmarks(c: &mut Criterion) {
+    let Some(weights) = env::var_os("CACTUS_WHISTLE_WEIGHTS")
+        .and_then(|path| whistle::Weights::from_file(path).ok())
+    else {
+        println!("skipping: set CACTUS_WHISTLE_WEIGHTS to a whistle.cact to benchmark Whistle");
+        return;
+    };
+
+    let clip = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/clips/jfk.wav");
+    let pcm: Vec<f32> = hound::WavReader::open(clip)
+        .expect("the vendored clip opens")
+        .samples::<i16>()
+        .map(|sample| f32::from(sample.expect("a whole sample")) / 32768.0)
+        .collect();
+
+    let mut whistle = Whistle::builder(weights)
+        .build()
+        .expect("the speech model is free");
+
+    let mut group = c.benchmark_group("transcribe");
+    group.bench_function("jfk_11s", |bencher| {
+        bencher.iter(|| black_box(whistle.transcribe(&pcm).expect("the clip transcribes")));
+    });
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default()
         .sample_size(10)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(3));
-    targets = engine_benchmarks
+    targets = engine_benchmarks, speech_benchmarks
 }
 criterion_main!(benches);

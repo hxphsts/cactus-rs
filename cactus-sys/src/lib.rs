@@ -11,7 +11,8 @@
 //!
 //! ## Key Features
 //!
-//! - **Needle 3**: the five functions of `needle.h`, behind the `needle` feature (default)
+//! - **Needle 3 and Whistle**: the nine functions of `needle.h`, behind the `needle` feature
+//!   (default)
 //! - **Pinned Binaries**: the archive is fetched from one Hugging Face commit and checked
 //!   against a SHA-256 recorded in this crate
 //! - **Offline Builds**: point `CACTUS_NEEDLE_LIB_DIR` at a local archive and nothing is
@@ -23,6 +24,7 @@
 //! | Engine | Header | Feature | Status |
 //! | --- | --- | --- | --- |
 //! | Needle 3 | `include/needle.h` | `needle` | supported |
+//! | Whistle | `include/needle.h` | `needle` | supported |
 //! | Cactus | `cactus_engine.h` | none yet | planned |
 //!
 //! ## Linking
@@ -63,9 +65,10 @@
 //!
 //! ## Safety Guarantees
 //!
-//! None. The engine is one process-global, non-thread-safe model with no handles, so every call
-//! must be serialised by the caller, and nothing here enforces that. Each function documents the
-//! contract that was measured against the shipped archive under `# Safety`.
+//! None. The engine holds one process-global model per kind, text (Needle 3) and speech (Whistle),
+//! behind one non-thread-safe runtime with no handles and one global error string. Every call, of
+//! either kind, must be serialised by the caller, and nothing here enforces that. Each function
+//! documents the contract that was measured against the shipped archive under `# Safety`.
 //!
 //! ## Affiliation
 //!
@@ -86,5 +89,7 @@ pub mod needle;
 
 #[cfg(feature = "needle")]
 pub use needle::{
-    NEEDLE_ENGINE_COMMIT, needle_complete, needle_embed, needle_init, needle_load, needle_reset,
+    NEEDLE_ENGINE_COMMIT, NEEDLE_SPEECH, NEEDLE_TEXT, needle_complete, needle_embed, needle_init,
+    needle_last_error, needle_load, needle_models, needle_reset, needle_set_audio,
+    needle_transcribe,
 };

@@ -3,14 +3,14 @@ name = "cactus-rs"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-description = "Safe Rust bindings for Cactus Compute's Needle engine: tool calling, structured extraction and embeddings"
+description = "Safe Rust bindings for Cactus Compute's Needle and Whistle engines: tool calling, speech-to-text, structured extraction and embeddings"
 readme = "../README.md"
 homepage.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/cactus-rs"
 license.workspace = true
-keywords = ["cactus", "needle", "llm", "tool-calling", "inference"]
-categories = ["api-bindings", "science", "text-processing"]
+keywords = ["cactus", "needle", "whistle", "speech-to-text", "tool-calling"]
+categories = ["api-bindings", "science", "text-processing", "multimedia::audio"]
 rust-version.workspace = true
 include = [
     "LICENSE-MIT",
@@ -20,6 +20,7 @@ include = [
     "benches/*.rs",
     "tests/**/*.rs",
     "tests/data/*",
+    "tests/data/clips/*",
 ]
 
 [package.metadata.docs.rs]
@@ -33,7 +34,7 @@ download = ["dep:ureq", "dep:sha2"]
 schemars = ["dep:schemars"]
 
 [dependencies]
-cactus-sys = { path = "../cactus-sys", version = "0.1.0", default-features = false, features = [
+cactus-sys = { path = "../cactus-sys", version = "0.2.0", default-features = false, features = [
     "needle",
 ] }
 serde = { version = "1.0", features = ["derive"] }
@@ -55,23 +56,38 @@ bench = false
 
 [dev-dependencies]
 criterion = "0.7"
+hound = "3.5"
 proptest = "1.8"
 
 [[example]]
 name = "desktop"
 path = "examples/desktop.rs"
+required-features = ["download"]
 
 [[example]]
 name = "lights"
 path = "examples/lights.rs"
+required-features = ["download"]
 
 [[example]]
 name = "extract"
 path = "examples/extract.rs"
+required-features = ["download"]
 
 [[example]]
 name = "embed"
 path = "examples/embed.rs"
+required-features = ["download"]
+
+[[example]]
+name = "transcribe"
+path = "examples/transcribe.rs"
+required-features = ["download"]
+
+[[example]]
+name = "voice_lights"
+path = "examples/voice_lights.rs"
+required-features = ["download"]
 
 [[example]]
 name = "custom_weights"
@@ -88,6 +104,10 @@ path = "tests/needle_spec_tests.rs"
 [[test]]
 name = "property_tests"
 path = "tests/property_tests.rs"
+
+[[test]]
+name = "whistle_tests"
+path = "tests/whistle_tests.rs"
 
 [[bench]]
 name = "completion"

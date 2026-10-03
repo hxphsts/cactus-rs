@@ -1,4 +1,4 @@
-//! The Needle 3 engine: tool calling, structured extraction and text embedding.
+//! The Needle 3 model: tool calling, structured extraction and text embedding.
 //!
 //! ## Overview
 //!
@@ -14,10 +14,23 @@
 //! [`NeedleBuilder`] collects the conversation prefix and [`CompleteOptions`] sizes a turn.
 //! [`Kind`] says whether the engine reached for tools or answered in prose.
 //!
-//! The engine is one process-global, non-thread-safe model whose weights cannot be unloaded.
-//! [`engine`] documents what that means for a program; the short version is that a second
-//! [`NeedleBuilder::build`] while a [`Needle`] is alive returns
-//! [`Error::EngineBusy`](crate::Error::EngineBusy), and dropping the [`Needle`] frees the slot.
+//! The engine holds one process-global text model, beside one speech model, behind a
+//! non-thread-safe runtime whose weights cannot be unloaded. [`engine`] documents what that
+//! means for a program; the short version is that a second [`NeedleBuilder::build`] while a
+//! [`Needle`] is alive returns [`Error::EngineBusy`](crate::Error::EngineBusy), and dropping the
+//! [`Needle`] frees the slot.
+//!
+//! ## Audio Input
+//!
+//! [`Needle::complete_audio`] takes a 16 kHz mono clip instead of a sentence: the engine
+//! transcribes it with the speech model, answers the transcript as it would a typed turn, and
+//! [`Completion::audio`] carries the [`Transcript`](crate::whistle::Transcript) it heard. The
+//! speech model comes from [`crate::whistle`]: build a [`Whistle`](crate::whistle::Whistle) once
+//! in the process first, or the call returns
+//! [`Error::SpeechModelNotLoaded`](crate::Error::SpeechModelNotLoaded).
+//! [`Needle::complete_audio_with_options`] takes
+//! [`TranscribeOptions`](crate::whistle::TranscribeOptions) for the language, keywords and word
+//! timestamps.
 //!
 //! ## Usage
 //!
@@ -25,7 +38,7 @@
 //! use cactus_rs::needle::{Needle, Tool, Weights};
 //! use serde_json::json;
 //!
-//! let mut needle = Needle::builder(Weights::fetch()?)
+//! let mut needle = Needle::builder(Weights::from_file("needle3.cact")?)
 //!     .system("You control the lights.")
 //!     .tool(Tool::new(
 //!         "set_light",

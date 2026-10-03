@@ -2,7 +2,7 @@
 
 # cactus-rs
 
-Safe Rust bindings for [Cactus Compute](https://cactuscompute.com)'s on-device engines, starting with [Needle 3](https://github.com/cactus-compute/needle): tool calling, structured extraction and text embedding.
+Safe Rust bindings for [Cactus Compute](https://cactuscompute.com)'s on-device engines: [Needle 3](https://github.com/cactus-compute/needle) for tool calling, structured extraction and embeddings, and Whistle for speech-to-text.
 
 [![Crates.io](https://img.shields.io/crates/v/cactus-rs.svg)](https://crates.io/crates/cactus-rs) [![Documentation](https://docs.rs/cactus-rs/badge.svg)](https://docs.rs/cactus-rs) [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](https://github.com/hxphsts/cactus-rs/blob/main/LICENSE-MIT)
 
@@ -10,11 +10,15 @@ Safe Rust bindings for [Cactus Compute](https://cactuscompute.com)'s on-device e
 
 Needle 3 is a small model that reads a sentence and decides which of your functions to call, with which arguments. It runs on the CPU in about 100 MB of RAM at hundreds of tokens per second. This crate links the engine Cactus Compute publishes for it and gives it a typed Rust API.
 
+## What is Whistle?
+
+Whistle is a 16.9 MB speech-to-text model that runs inside the same engine as Needle, so both live in one process. It transcribes clips of up to 30 seconds of 16 kHz mono audio in seven languages (en, de, fr, es, it, nl, pl), with word timestamps, keyword biasing and speech embeddings. Hand a clip to Needle and it transcribes and answers it in one call, so a spoken request becomes tool calls.
+
 ## Quick Start
 
 ```toml
 [dependencies]
-cactus-rs = "0.1"
+cactus-rs = "0.2"
 serde_json = "1.0"
 ```
 
@@ -47,12 +51,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 That prints `set_light {"room":"kitchen","on":true}`. The first build downloads the 1 MB engine library and the first run downloads the 35 MB weights; both are pinned and SHA-256 verified.
 
+### Speech
+
+```rust
+use cactus_rs::whistle::{Weights, Whistle};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut whistle = Whistle::builder(Weights::fetch()?).build()?; // 16.9 MB, cached
+    let pcm: Vec<f32> = vec![0.0; 16_000]; // 16 kHz mono in [-1, 1], from your WAV reader
+    let transcript = whistle.transcribe(&pcm)?;
+    println!("{} ({})", transcript.text(), transcript.language_code());
+    Ok(())
+}
+```
+
+Once a `Whistle` has loaded the speech model, `needle.complete_audio(&pcm)` turns a clip into tool calls, with the transcript in `completion.audio()`.
+
 ## Features
 
 - Tool calls as typed values, with `call.parse::<YourStruct>()`
 - Structured extraction into your own types
 - Text embeddings, 3072 dimensions
-- One engine per process, enforced by the type system; `Needle` is `Send + Sync`
+- Speech-to-text in seven languages, with language detection or forcing, keyword biasing and word timestamps
+- Speech embeddings, 512 floats per 80 ms frame
+- Voice to tool calls: `Needle::complete_audio` transcribes and answers in one engine call
+- One model of each kind per process, enforced by the type system; `Needle` and `Whistle` are `Send + Sync` and share one engine lock
 - Pinned, checksum-verified engine and weights, with fully offline builds
 - `cactus-sys` for the raw C API underneath
 
@@ -65,6 +88,8 @@ That prints `set_light {"room":"kitchen","on":true}`. The first build downloads 
 | [`embed`](https://github.com/hxphsts/cactus-rs/blob/main/cactus-rs/examples/embed.rs) | Embeddings and cosine similarity |
 | [`custom_weights`](https://github.com/hxphsts/cactus-rs/blob/main/cactus-rs/examples/custom_weights.rs) | Weights loaded from a path |
 | [`desktop`](https://github.com/hxphsts/cactus-rs/blob/main/cactus-rs/examples/desktop.rs) | A twelve-tool agent loop that scores itself, and how to write schemas the model follows |
+| [`transcribe`](https://github.com/hxphsts/cactus-rs/blob/main/cactus-rs/examples/transcribe.rs) | A WAV file transcribed, with language, keywords and word timestamps |
+| [`voice_lights`](https://github.com/hxphsts/cactus-rs/blob/main/cactus-rs/examples/voice_lights.rs) | A spoken request turned into light-switch calls by Needle |
 
 Run one with `cargo run -p cactus-rs --example lights`.
 
@@ -80,7 +105,9 @@ Intel macOS and Windows MSVC are not supported, because upstream ships no archiv
 
 ## Roadmap
 
-- The general Cactus engine (`cactus_engine.h`: chat, vision, transcription, streaming) as a second `cactus-sys` feature
+- The general Cactus engine (`cactus_engine.h`: chat, vision, streaming) as a second `cactus-sys` feature
+- Streaming and microphone capture
+- Clips longer than 30 s
 - The grounding layer upstream implements in Python
 - Tool-index persistence
 - Subprocess isolation for several tuned models
@@ -91,4 +118,4 @@ See https://docs.rs/cactus-rs
 
 ## License
 
-MIT OR Apache-2.0. The vendored `needle.h` and the smart-home test data are Cactus Compute's, under Apache-2.0, with provenance noted beside each. This project is unofficial and not affiliated with Cactus Compute.
+MIT OR Apache-2.0. The vendored `needle.h` and the smart-home test data are Cactus Compute's, under Apache-2.0, with provenance noted beside each. The spoken test clips were synthesised for this repository with Piper TTS from public-domain and CC0 voices, and the JFK clip is in the public domain; see `cactus-rs/tests/data/README.md`. This project is unofficial and not affiliated with Cactus Compute.

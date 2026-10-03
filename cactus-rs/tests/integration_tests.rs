@@ -322,3 +322,34 @@ fn a_needle_two_archive_is_named_rather_than_loaded() {
     assert_eq!(tag, 0x05E1_2A83);
     assert!(error.to_string().contains("Needle 2"));
 }
+
+#[test]
+fn audio_needs_the_speech_model_loaded() {
+    let _engine = lock();
+    let Some(weights) = weights() else {
+        skipped("the speech-model-not-loaded test");
+        return;
+    };
+
+    // This binary never builds a Whistle, so the engine holds no speech model.
+    let mut needle = Needle::builder(weights)
+        .system("You control the lights.")
+        .tool(set_light())
+        .build()
+        .expect("the engine is free");
+    let error = needle
+        .complete_audio(&[0.0; 16_000])
+        .expect_err("there is no speech model to transcribe with");
+
+    assert!(
+        matches!(error, Error::SpeechModelNotLoaded),
+        "got {error:?}"
+    );
+
+    // The refusal happens before the engine is touched, so a text turn still works.
+    needle.reset();
+    let completion = needle
+        .complete("turn the kitchen light on")
+        .expect("the engine answers");
+    assert!(!completion.calls().is_empty());
+}
