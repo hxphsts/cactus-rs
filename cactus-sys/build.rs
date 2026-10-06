@@ -6,8 +6,9 @@
 //! 1. feature `needle` off: nothing to link.
 //! 2. `DOCS_RS` set: documentation builds do not link the engine.
 //! 3. `CACTUS_NEEDLE_LIB_DIR`: link the archive the caller points at.
-//! 4. feature `download-binaries`: fetch the pinned archive for the target and verify its
-//!    SHA-256 against `prebuilt.toml`.
+//! 4. feature `download-binaries`: fetch the pinned archive for the target from `HF_ENDPOINT`
+//!    (default `https://huggingface.co`) and verify its SHA-256 against `prebuilt.toml`. With
+//!    `HF_HUB_OFFLINE` set (to anything but `0`) only an archive already in `OUT_DIR` is used.
 //! 5. otherwise: fail, naming both options.
 
 use std::env;
@@ -26,6 +27,8 @@ fn main() {
     println!("cargo::rerun-if-env-changed=CACTUS_NEEDLE_LIB_DIR");
     println!("cargo::rerun-if-env-changed=CACTUS_CXXSTDLIB");
     println!("cargo::rerun-if-env-changed=DOCS_RS");
+    println!("cargo::rerun-if-env-changed=HF_ENDPOINT");
+    println!("cargo::rerun-if-env-changed=HF_HUB_OFFLINE");
 
     // Single source of truth for the pin: `cactus_sys::NEEDLE_ENGINE_COMMIT` reads it back.
     println!(
@@ -151,10 +154,21 @@ fn downloaded_lib_dir() -> PathBuf {
         return out_dir;
     }
 
-    let url = format!(
-        "https://huggingface.co/{repo}/resolve/{commit}/{platform}/{ARCHIVE}",
-        repo = prebuilt("repo"),
-        commit = prebuilt("commit"),
+    if download::offline(env::var("HF_HUB_OFFLINE").ok().as_deref()) {
+        fail(&format!(
+            "cactus-sys: offline mode is on (HF_HUB_OFFLINE is set), and the Needle engine\n\
+             archive for `{platform}` has not been downloaded into this target directory yet.\n\
+             Help: set CACTUS_NEEDLE_LIB_DIR to a directory holding libneedle.a for your target,\n\
+             or unset HF_HUB_OFFLINE (or set it to 0) to allow the download."
+        ));
+    }
+
+    let endpoint = download::endpoint(env::var("HF_ENDPOINT").ok().as_deref());
+    let url = download::url_with(
+        &endpoint,
+        prebuilt("repo"),
+        prebuilt("commit"),
+        &format!("{platform}/{ARCHIVE}"),
     );
     download::fetch(&url, &out_dir, &archive, expected);
     out_dir
@@ -320,14 +334,80 @@ fn require_libcxx() {
 }
 
 /// Network and digest handling, pulled in only by the `download-binaries` feature.
+///
+/// The timeout, retry and cleanup rules are the ones `cactus-rs` applies to weight downloads in
+/// `cactus-rs/src/download.rs`, with helpers of the same names; that file holds their tests.
 #[cfg(feature = "download-binaries")]
 mod download {
+    use std::env;
     use std::fmt::Write as _;
     use std::fs;
     use std::io::{self, Read as _};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::thread;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use sha2::{Digest as _, Sha256};
+
+    /// Ceiling on the body, well above any archive upstream has ever shipped (the largest at the
+    /// pinned commit is 3.5 MiB), so a misdirected response cannot fill the disk.
+    const MAX_BODY: u64 = 64 * 1024 * 1024;
+
+    /// How long establishing the connection, TLS handshake included, may take.
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+    /// How long the server may take to send the response headers once asked.
+    const RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
+
+    /// How long the whole body may take, unless `CACTUS_DOWNLOAD_TIMEOUT` says otherwise.
+    const BODY_TIMEOUT: Duration = Duration::from_secs(900);
+
+    /// Attempts after the first, unless `CACTUS_DOWNLOAD_RETRIES` says otherwise.
+    const RETRIES: u32 = 3;
+
+    /// The longest `Retry-After` honoured.
+    const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
+
+    /// Age past which a `.partial` file is taken to belong to a build that died.
+    const STALE_AFTER: Duration = Duration::from_secs(60 * 60);
+
+    /// Where downloads come from unless `HF_ENDPOINT` names a mirror.
+    const HF_DEFAULT_ENDPOINT: &str = "https://huggingface.co";
+
+    /// The download URL of `file` at `revision` of `repo` on the hub at `endpoint`.
+    pub fn url_with(endpoint: &str, repo: &str, revision: &str, file: &str) -> String {
+        format!(
+            "{}/{repo}/resolve/{revision}/{file}",
+            endpoint.trim_end_matches('/')
+        )
+    }
+
+    /// The hub to download from: `HF_ENDPOINT` without a trailing `/`, or Hugging Face itself.
+    pub fn endpoint(value: Option<&str>) -> String {
+        match value.map(|value| value.trim().trim_end_matches('/')) {
+            Some(value) if !value.is_empty() => value.to_owned(),
+            _ => HF_DEFAULT_ENDPOINT.to_owned(),
+        }
+    }
+
+    /// Whether `HF_HUB_OFFLINE` forbids the network: any value but empty or `0`.
+    pub fn offline(value: Option<&str>) -> bool {
+        value.is_some_and(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0"
+        })
+    }
+
+    /// Why one download attempt failed, and whether another could succeed.
+    enum Failure {
+        /// A timeout, a dropped connection, a busy or failing server, or a corrupted transfer.
+        Transient {
+            detail: String,
+            retry_after: Option<Duration>,
+        },
+        /// Trying again would fail the same way; the whole message for [`super::fail`].
+        Fatal(String),
+    }
 
     /// Returns the SHA-256 of `path` in lowercase hex, or `None` when it cannot be read.
     pub fn digest(path: &Path) -> Option<String> {
@@ -353,7 +433,9 @@ mod download {
     /// Downloads `url` to `archive`, refusing to install it unless it hashes to `expected`.
     ///
     /// The body lands on a temporary name first, so an interrupted build never leaves a
-    /// half-written archive that a later build would mistake for a complete one.
+    /// half-written archive that a later build would mistake for a complete one; temporary
+    /// files more than an hour old, left by builds that died, are removed first. Transient
+    /// failures and one checksum mismatch are retried, as in `cactus-rs`.
     pub fn fetch(url: &str, out_dir: &Path, archive: &Path, expected: &str) {
         if let Err(error) = fs::create_dir_all(out_dir) {
             super::fail(&format!(
@@ -362,24 +444,57 @@ mod download {
                 out_dir.display()
             ));
         }
+        remove_stale_partials(out_dir, super::ARCHIVE, SystemTime::now());
 
-        let partial = archive.with_extension("a.partial");
-        get(url, &partial);
+        let agent = agent(body_timeout(
+            env::var("CACTUS_DOWNLOAD_TIMEOUT").ok().as_deref(),
+        ));
+        let attempts = attempts(env::var("CACTUS_DOWNLOAD_RETRIES").ok().as_deref());
+        let mut mismatches = 0;
 
-        let actual = digest(&partial).unwrap_or_default();
-        if actual != expected {
+        let result = retrying(attempts, thread::sleep, |_| {
+            let partial = partial_path(archive);
+            if let Err(failure) = get(&agent, url, &partial) {
+                let _ = fs::remove_file(&partial);
+                return Err(failure);
+            }
+
+            let actual = digest(&partial).unwrap_or_default();
+            if actual == expected {
+                return Ok(partial);
+            }
             let _ = fs::remove_file(&partial);
-            super::fail(&format!(
-                "cactus-sys: checksum mismatch for the downloaded engine archive.\n\
+            mismatches += 1;
+            if mismatches == 1 {
+                return Err(Failure::Transient {
+                    detail: format!("checksum mismatch: expected {expected}, got {actual}"),
+                    retry_after: None,
+                });
+            }
+            Err(Failure::Fatal(format!(
+                "cactus-sys: checksum mismatch for the downloaded engine archive, twice.\n\
                  url:      {url}\n\
                  expected: {expected}\n\
                  actual:   {actual}\n\
-                 The download was discarded. Either the transfer was corrupted, a proxy served\n\
-                 something else, or prebuilt.toml no longer matches the pinned commit.\n\
+                 The download was discarded. Either a proxy served something else, or\n\
+                 prebuilt.toml no longer matches the pinned commit.\n\
                  Help: retry the build; if it keeps failing, verify cactus-sys/prebuilt.toml\n\
                  against the upstream repository before trusting the archive."
-            ));
-        }
+            )))
+        });
+
+        let partial = match result {
+            Ok(partial) => partial,
+            Err(Failure::Fatal(message)) => super::fail(&message),
+            Err(Failure::Transient { detail, .. }) => super::fail(&format!(
+                "cactus-sys: could not download the Needle engine archive.\n\
+                 url:   {url}\n\
+                 error: gave up after {attempts} attempts; the last failed with: {detail}\n\
+                 Help: check network access to the hub (HF_ENDPOINT, default huggingface.co),\n\
+                 raise CACTUS_DOWNLOAD_TIMEOUT or CACTUS_DOWNLOAD_RETRIES, or build offline by\n\
+                 setting CACTUS_NEEDLE_LIB_DIR to a directory holding libneedle.a for your target."
+            )),
+        };
 
         if let Err(error) = fs::rename(&partial, archive) {
             let _ = fs::remove_file(&partial);
@@ -391,47 +506,216 @@ mod download {
         }
     }
 
-    /// Streams a GET into `dest`, identifying only as `cactus-sys/<version>`.
-    ///
-    /// The body is capped well above any archive upstream has ever shipped (the largest at the
-    /// pinned commit is 3.5 MiB), so a misdirected response cannot fill the disk.
-    fn get(url: &str, dest: &Path) {
-        const MAX_BODY: u64 = 64 * 1024 * 1024;
+    /// `<archive>.<pid>.<nanos>.partial`: unique to this process and moment.
+    fn partial_path(archive: &Path) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        let name = archive
+            .file_name()
+            .map_or_else(|| "archive".into(), |name| name.to_string_lossy());
+        archive.with_file_name(format!("{name}.{}.{nanos}.partial", std::process::id()))
+    }
 
+    /// Calls `attempt` with `0, 1, ...` until it succeeds, fails fatally, or `attempts` calls
+    /// have been made, sleeping between transient failures for `Retry-After` or [`backoff`].
+    fn retrying<T>(
+        attempts: u32,
+        mut sleep: impl FnMut(Duration),
+        mut attempt: impl FnMut(u32) -> Result<T, Failure>,
+    ) -> Result<T, Failure> {
+        let mut number = 0;
+        loop {
+            match attempt(number) {
+                Err(Failure::Transient { retry_after, .. }) if number + 1 < attempts => {
+                    sleep(retry_after.unwrap_or_else(|| backoff(number, clock_nanos())));
+                    number += 1;
+                }
+                done => return done,
+            }
+        }
+    }
+
+    /// 1 s, 2 s, 4 s, ... after failed attempt `attempt`, moved by up to 25 % by `nanos`.
+    fn backoff(attempt: u32, nanos: u32) -> Duration {
+        let base = 1000_u64 << attempt.min(6);
+        let millis = base * 3 / 4 + u64::from(nanos) % (base / 2 + 1);
+        Duration::from_millis(millis)
+    }
+
+    /// The sub-second part of the clock, the jitter source for [`backoff`].
+    fn clock_nanos() -> u32 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.subsec_nanos())
+    }
+
+    /// Whether a failure with this HTTP status, or with none (transport), may go away.
+    fn should_retry(status: Option<u16>) -> bool {
+        match status {
+            None => true,
+            Some(code) => code == 408 || code == 429 || (500..600).contains(&code),
+        }
+    }
+
+    /// A `Retry-After` header in seconds, capped at [`MAX_RETRY_AFTER`].
+    fn retry_after(value: Option<&str>) -> Option<Duration> {
+        let seconds = value?.trim().parse::<u64>().ok()?;
+        Some(Duration::from_secs(seconds).min(MAX_RETRY_AFTER))
+    }
+
+    /// `CACTUS_DOWNLOAD_RETRIES` as a total attempt count.
+    fn attempts(value: Option<&str>) -> u32 {
+        let retries = value
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .unwrap_or(RETRIES);
+        retries.saturating_add(1)
+    }
+
+    /// `CACTUS_DOWNLOAD_TIMEOUT` as the body timeout, [`BODY_TIMEOUT`] unless positive.
+    fn body_timeout(value: Option<&str>) -> Duration {
+        value
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|&seconds| seconds > 0)
+            .map_or(BODY_TIMEOUT, Duration::from_secs)
+    }
+
+    /// Whether `name` is a temporary file for `file` left more than an hour before `now`.
+    fn is_stale_partial(name: &str, file: &str, modified: SystemTime, now: SystemTime) -> bool {
+        let ours = name
+            .strip_prefix(file)
+            .and_then(|rest| rest.strip_prefix('.'))
+            .is_some_and(|rest| rest == "partial" || rest.ends_with(".partial"));
+        ours && now
+            .duration_since(modified)
+            .is_ok_and(|age| age > STALE_AFTER)
+    }
+
+    /// Removes the temporary files of downloads of `file` into `dir` that died; errors ignored.
+    fn remove_stale_partials(dir: &Path, file: &str, now: SystemTime) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) else {
+                continue;
+            };
+            if is_stale_partial(name, file, modified, now) {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// The HTTP client: identifies only as `cactus-sys/<version>` and times out.
+    fn agent(body_timeout: Duration) -> ureq::Agent {
         let config = ureq::Agent::config_builder()
             .user_agent(concat!("cactus-sys/", env!("CARGO_PKG_VERSION")))
+            .http_status_as_error(false)
+            .timeout_connect(Some(CONNECT_TIMEOUT))
+            .timeout_recv_response(Some(RESPONSE_TIMEOUT))
+            .timeout_recv_body(Some(body_timeout))
             .build();
-        let agent = ureq::Agent::new_with_config(config);
+        ureq::Agent::new_with_config(config)
+    }
 
-        let mut response = match agent.get(url).call() {
-            Ok(response) => response,
-            Err(error) => super::fail(&format!(
-                "cactus-sys: could not download the Needle engine archive.\n\
-                 url:   {url}\n\
-                 error: {error}\n\
-                 Help: check network access to huggingface.co, or build offline by setting\n\
+    /// One GET of `url` streamed into `dest`, sorting any failure into worth retrying or not.
+    fn get(agent: &ureq::Agent, url: &str, dest: &Path) -> Result<(), Failure> {
+        let mut response = agent
+            .get(url)
+            .call()
+            .map_err(|error| transport(error, url))?;
+
+        let status = response.status().as_u16();
+        if status == 404 {
+            return Err(Failure::Fatal(format!(
+                "cactus-sys: the Needle engine archive is not where the pin says (HTTP 404).\n\
+                 url: {url}\n\
+                 The pinned revision or the file is missing from the repository, so the pin in\n\
+                 prebuilt.toml is wrong.\n\
+                 Help: restore cactus-sys/prebuilt.toml from the repository, or set\n\
                  CACTUS_NEEDLE_LIB_DIR to a directory holding libneedle.a for your target."
-            )),
-        };
+            )));
+        }
+        if !(200..300).contains(&status) {
+            if !should_retry(Some(status)) {
+                return Err(Failure::Fatal(format!(
+                    "cactus-sys: could not download the Needle engine archive.\n\
+                     url:   {url}\n\
+                     error: HTTP {status}\n\
+                     Help: check access to the hub (HF_ENDPOINT, default huggingface.co), or\n\
+                     build offline by setting CACTUS_NEEDLE_LIB_DIR to a directory holding\n\
+                     libneedle.a for your target."
+                )));
+            }
+            let wait = response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok());
+            return Err(Failure::Transient {
+                detail: format!("HTTP {status}"),
+                retry_after: retry_after(wait),
+            });
+        }
 
         let mut file = match fs::File::create(dest) {
             Ok(file) => file,
-            Err(error) => super::fail(&format!(
-                "cactus-sys: could not write `{}`: {error}\n\
-                 Help: check the free space and permissions on the Cargo target directory.",
-                dest.display()
-            )),
+            Err(error) => {
+                return Err(Failure::Fatal(format!(
+                    "cactus-sys: could not write `{}`: {error}\n\
+                     Help: check the free space and permissions on the Cargo target directory.",
+                    dest.display()
+                )));
+            }
         };
 
         let mut body = response.body_mut().with_config().limit(MAX_BODY).reader();
-        if let Err(error) = io::copy(&mut body, &mut file) {
-            let _ = fs::remove_file(dest);
-            super::fail(&format!(
-                "cactus-sys: the engine archive download failed part way through.\n\
+        match io::copy(&mut body, &mut file) {
+            Ok(_) => Ok(()),
+            // Errors from the body reader carry the client's error; those from the file do not.
+            Err(error)
+                if error
+                    .get_ref()
+                    .is_some_and(|inner| inner.is::<ureq::Error>()) =>
+            {
+                Err(transport(ureq::Error::from(error), url))
+            }
+            Err(error) => Err(Failure::Fatal(format!(
+                "cactus-sys: could not write `{}`: {error}\n\
+                 Help: check the free space and permissions on the Cargo target directory.",
+                dest.display()
+            ))),
+        }
+    }
+
+    /// Sorts a client error: a request that cannot be made, or a body over the cap, is fatal;
+    /// anything that went wrong on the wire is worth another attempt.
+    fn transport(error: ureq::Error, url: &str) -> Failure {
+        let fatal = matches!(
+            error,
+            ureq::Error::BodyExceedsLimit(_)
+                | ureq::Error::BadUri(_)
+                | ureq::Error::Http(_)
+                | ureq::Error::InvalidProxyUrl
+                | ureq::Error::RequireHttpsOnly(_)
+        );
+        if fatal {
+            Failure::Fatal(format!(
+                "cactus-sys: could not download the Needle engine archive.\n\
                  url:   {url}\n\
                  error: {error}\n\
-                 Help: retry the build."
-            ));
+                 Help: check network access to the hub (HF_ENDPOINT, default huggingface.co), or\n\
+                 build offline by setting CACTUS_NEEDLE_LIB_DIR to a directory holding\n\
+                 libneedle.a for your target."
+            ))
+        } else {
+            Failure::Transient {
+                detail: error.to_string(),
+                retry_after: None,
+            }
         }
     }
 }
