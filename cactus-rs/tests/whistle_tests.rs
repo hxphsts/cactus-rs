@@ -460,8 +460,8 @@ fn a_whistle_built_on_one_thread_transcribes_on_another() {
     drop(whistle);
 }
 
-/// Loads both models from the right archives, so a mismatched archive is then known by its
-/// fingerprint and named as the wrong model whichever test loaded what first.
+/// Loads both models from the right archives and checks each answers, so a wrong-model test
+/// starts from, and can return to, two working models whichever test loaded what first.
 fn load_both(needle_weights: needle::Weights, whistle_weights: whistle::Weights) {
     let mut needle = lights(needle_weights);
     needle.reset();

@@ -29,6 +29,7 @@ use std::ffi::{CStr, CString, c_char, c_int, c_ulonglong};
 use std::ptr;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use crate::archive;
 use crate::error::{Error, Result};
 use crate::model::Model;
 
@@ -65,14 +66,6 @@ impl Kind {
         match self {
             Kind::Text => cactus_sys::NEEDLE_TEXT,
             Kind::Speech => cactus_sys::NEEDLE_SPEECH,
-        }
-    }
-
-    /// The other kind.
-    const fn other(self) -> Kind {
-        match self {
-            Kind::Text => Kind::Speech,
-            Kind::Speech => Kind::Text,
         }
     }
 
@@ -385,74 +378,93 @@ impl Slot {
 
     /// Loads `bytes` as this slot's kind, unless that archive is already loaded.
     ///
-    /// Archives already seen are answered from their fingerprints without the engine: the one
-    /// loaded as this kind is reused, one loaded as the other kind is [`Error::WrongModel`]
+    /// The archive loaded as this kind, known by its fingerprint, is reused without the engine.
+    /// Any other archive is classified from its tensor directory first, so that only an archive
+    /// of this kind ever reaches `needle_load`: one of the other kind is [`Error::WrongModel`]
     /// (checked before a mismatch of this kind, so a wrong archive is named as such whatever
-    /// else is loaded), and any other archive while this kind is loaded is
+    /// else is loaded), and one of this kind while another is loaded is
     /// [`Error::WeightsAlreadyLoaded`].
     ///
-    /// An archive not seen before goes to the engine. Needle 3 and Whistle archives share a
-    /// magic tag, so the kind is learned from it: the load must add this slot's bit to
-    /// [`Guard::models`]. If it adds the other bit instead, the archive stays loaded as the
-    /// other kind (nothing unloads weights), its fingerprint is recorded there, and the call
-    /// returns [`Error::WrongModel`].
+    /// The engine would not refuse either. Measured against the pinned engine by the cactus-sys
+    /// probes `probe_text_reload.rs`, `probe_speech_reload.rs`, `probe_cross_kind.rs` and
+    /// `probe_same_reload.rs`: a load of a kind already held hot-swaps that kind's model, and a
+    /// text load, even of the same bytes, drops the `needle_init` prefix; the kinds are
+    /// independent, and a rejected load changes nothing.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::WeightsAlreadyLoaded`] when a different archive of this kind is loaded,
-    /// [`Error::WrongModel`] when the archive is, or turns out to be, of the other kind, and
-    /// [`Error::Load`] when the engine rejects it.
+    /// Returns [`Error::WrongModel`] when the archive is of the other kind,
+    /// [`Error::UnsupportedWeights`] when its tensor directory cannot be read,
+    /// [`Error::WeightsAlreadyLoaded`] when a different archive of this kind is loaded, and
+    /// [`Error::LoadFailed`] with the engine's reason when it rejects the archive or does not
+    /// report it loaded.
     pub(crate) fn load(&self, guard: &mut Guard, bytes: &[u8]) -> Result<()> {
         let mine = self.kind;
-        let other = mine.other();
         let wanted = fingerprint(bytes);
-        let expected = Error::WrongModel {
-            expected: mine.model(),
-        };
 
-        // Already loaded as this kind: nothing to do.
+        // Already loaded as this kind: nothing to do. Loading it again would not be harmless:
+        // the engine drops the text prefix on every text load.
         if guard.0.loaded[mine.index()] == Some(wanted) {
             return Ok(());
         }
-        // Already loaded, as the other kind: the engine need not see it again.
-        if guard.0.loaded[other.index()] == Some(wanted) {
-            return Err(expected);
+
+        // The engine would load an archive of the other kind over that kind's model, so it is
+        // refused here, before the engine sees it.
+        match archive::kind_of(bytes) {
+            Some(model) if model == mine.model() => {}
+            Some(_) => {
+                return Err(Error::WrongModel {
+                    expected: mine.model(),
+                });
+            }
+            // The magic tag was checked when the weights were made; the directory after it is
+            // what does not hold up.
+            None => {
+                return Err(Error::UnsupportedWeights {
+                    tag: archive::MAGIC,
+                });
+            }
         }
-        // A different archive of this kind owns the slot for the life of the process.
+
+        // A different archive of this kind would hot-swap the loaded model; the first archive
+        // owns the process.
         if guard.0.loaded[mine.index()].is_some() {
             return Err(Error::WeightsAlreadyLoaded);
         }
 
-        let before = guard.models();
-        if guard.load(bytes) < 0 {
-            return Err(Error::Load);
+        let rc = guard.load(bytes);
+        if rc < 0 {
+            // Copied while the guard is held: the string is valid only until the next call.
+            return Err(Error::LoadFailed {
+                model: mine.model(),
+                detail: or_unexplained(guard.last_error(), "needle_load", rc),
+            });
         }
-        let after = guard.models();
-        let gained = after & !before;
 
-        // The usual case: a bit appeared, and it says which kind the archive is.
-        let is_mine = if gained & mine.bit() != 0 {
-            true
-        } else if gained & other.bit() != 0 {
-            false
-        } else {
-            // No new bit: the engine already held the kind this archive is. That happens when
-            // something outside this crate loaded weights through cactus-sys, or when this is a
-            // second, different archive of the other kind.
-            // TODO(probe f): confirm whether such a load replaces the other kind's model or is
-            // ignored; today it is reported as the wrong model either way.
-            after & mine.bit() != 0 && after & other.bit() == 0
-        };
-
-        if is_mine {
-            guard.0.loaded[mine.index()] = Some(wanted);
-            Ok(())
-        } else {
-            // Recorded only if the other kind had nothing recorded: a fingerprint already there
-            // belongs to the archive its slot holder loaded.
-            guard.0.loaded[other.index()].get_or_insert(wanted);
-            Err(expected)
+        // Defensive: the classification above says which bit the load sets. If the engine
+        // disagrees, nothing is recorded, so the same bytes never pass for loaded.
+        let models = guard.models();
+        if models & mine.bit() == 0 {
+            return Err(Error::LoadFailed {
+                model: mine.model(),
+                detail: format!(
+                    "engine reported models {models:#04b} after loading a {} archive",
+                    mine.model()
+                ),
+            });
         }
+
+        guard.0.loaded[mine.index()] = Some(wanted);
+        Ok(())
+    }
+}
+
+/// The engine's reason, or a note of what failed when it gave none.
+pub(crate) fn or_unexplained(reason: String, call: &str, rc: c_int) -> String {
+    if reason.is_empty() {
+        format!("{call} returned {rc} and gave no reason")
+    } else {
+        reason
     }
 }
 
@@ -511,7 +523,6 @@ mod tests {
     #[test]
     fn kinds_map_to_distinct_bits_and_models() {
         assert_eq!(Kind::Text.bit() & Kind::Speech.bit(), 0);
-        assert_eq!(Kind::Text.other(), Kind::Speech);
         assert_eq!(Kind::Speech.model(), Model::Whistle);
         assert_eq!(Kind::Text.model(), Model::Needle);
     }

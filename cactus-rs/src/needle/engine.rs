@@ -67,6 +67,12 @@ const DEFAULT_MAX_NEW_TOKENS: u32 = 256;
 /// room for a turn that calls many tools at once without ever growing the buffer.
 const MIN_OUTPUT_CAPACITY: usize = 64 * 1024;
 
+/// Ceiling on the output buffer: 4 MiB, about 65 000 tokens at 64 bytes each, beyond any
+/// context window the engine has. A larger budget cannot produce more, and sizing the buffer from
+/// it would allocate (and keep) up to 2 GiB; an envelope that does fill it is still reported as
+/// [`Error::Truncated`].
+const MAX_OUTPUT_CAPACITY: usize = 4 << 20;
+
 /// Extra output room for an audio turn: the transcript and, when asked for, every word with its
 /// timing ride in the same envelope as the calls.
 const AUDIO_HEADROOM: usize = 64 * 1024;
@@ -123,7 +129,8 @@ impl CompleteOptions {
 
     /// Sets the token budget for the turn.
     ///
-    /// The budget also sizes the output buffer, so raising it costs memory as well as time.
+    /// The budget also sizes the output buffer, so raising it costs memory as well as time; the
+    /// buffer is capped at 4 MiB, beyond any context window, whatever the budget.
     ///
     /// # Examples
     ///
@@ -158,13 +165,21 @@ impl CompleteOptions {
     ///
     /// The engine truncates its envelope silently, so the buffer is sized from the budget rather
     /// than grown on demand: 64 bytes per token is well above what any observed envelope used,
-    /// with a 64 KiB floor and an `i32::MAX` ceiling because the C API takes an `int`.
+    /// with a 64 KiB floor and a [`MAX_OUTPUT_CAPACITY`] ceiling (well under the C API's `int`).
     fn output_capacity(self) -> usize {
         // Saturating throughout: on the 32-bit targets upstream ships, a large budget times 64
         // does not fit in a `usize`.
         let per_token = (self.max_new_tokens as usize).saturating_mul(64);
         let wanted = 4096_usize.saturating_add(per_token);
-        wanted.max(MIN_OUTPUT_CAPACITY).min(i32::MAX as usize)
+        wanted.clamp(MIN_OUTPUT_CAPACITY, MAX_OUTPUT_CAPACITY)
+    }
+
+    /// The output buffer size an audio turn with this budget needs: [`Self::output_capacity`]
+    /// plus [`AUDIO_HEADROOM`], under the same ceiling.
+    fn audio_output_capacity(self) -> usize {
+        self.output_capacity()
+            .saturating_add(AUDIO_HEADROOM)
+            .min(MAX_OUTPUT_CAPACITY)
     }
 }
 
@@ -292,10 +307,11 @@ impl NeedleBuilder {
     ///
     /// Returns [`Error::EngineBusy`] when another [`Needle`] is alive,
     /// [`Error::WeightsAlreadyLoaded`] when the process already loaded a different archive,
-    /// [`Error::Load`] when the engine rejects the archive, [`Error::Tools`] when the tool
+    /// [`Error::LoadFailed`] when the engine rejects the archive, [`Error::Tools`] when the tool
     /// declarations cannot be serialised, [`Error::InteriorNul`] when the
     /// system prompt, the tool declarations or the tool index path contain a NUL byte, and
-    /// [`Error::Init`] when the engine cannot build the prefix.
+    /// [`Error::InitFailed`] with the engine's reason when it cannot build the prefix, such as a
+    /// prefix too long for the context window.
     pub fn build(self) -> Result<Needle> {
         // Taken first: the slot releases the engine on every path out of this function. It is
         // declared before the guard so that it drops after it: `Slot`'s `Drop` takes the lock.
@@ -324,7 +340,14 @@ impl NeedleBuilder {
 
         let rc = guard.init(system.as_deref(), &tools, tool_index.as_deref());
         if rc <= 0 {
-            return Err(Error::Init);
+            // Copied while the guard is held: the string is valid only until the next call.
+            let reason = guard.last_error();
+            let detail = if reason.is_empty() {
+                format!("needle_init returned {rc} and gave no reason")
+            } else {
+                format!("{reason} (needle_init returned {rc})")
+            };
+            return Err(Error::InitFailed { detail });
         }
 
         Ok(Needle {
@@ -509,7 +532,7 @@ impl Needle {
     ///
     /// The transcription options are handed to the engine on every call, so one turn's language
     /// or keywords never leak into the next. The output buffer gets 64 KiB on top of what the
-    /// token budget needs, for the transcript and its word timestamps.
+    /// token budget needs, for the transcript and its word timestamps, within the same 4 MiB cap.
     ///
     /// # Examples
     ///
@@ -545,11 +568,12 @@ impl Needle {
     ) -> Result<Completion> {
         let audio = audio.encode()?;
         crate::whistle::validate(pcm)?;
-        let capacity = options
-            .output_capacity()
-            .saturating_add(AUDIO_HEADROOM)
-            .min(i32::MAX as usize);
-        self.turn(Input::Audio(pcm), capacity, options, Some(&audio))
+        self.turn(
+            Input::Audio(pcm),
+            options.audio_output_capacity(),
+            options,
+            Some(&audio),
+        )
     }
 
     /// Runs one turn of either kind into the reused output buffer.
@@ -631,8 +655,8 @@ impl Needle {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InteriorNul`] when the input holds a NUL byte, and [`Error::Embed`] when
-    /// the engine refuses the call.
+    /// Returns [`Error::InteriorNul`] when the input holds a NUL byte, and [`Error::EmbedFailed`]
+    /// with the engine's reason when it refuses the call.
     pub fn embed<S>(&mut self, input: S) -> Result<Vec<f32>>
     where
         S: AsRef<str>,
@@ -641,11 +665,18 @@ impl Needle {
         let input = c_string(input.as_ref(), "input")?;
 
         let mut vector = vec![0.0_f32; dimension];
-        let rc = ffi::lock().embed(Input::Text(&input), &mut vector)?;
+        let mut guard = ffi::lock();
+        let rc = guard.embed(Input::Text(&input), &mut vector)?;
         // Success is the dimension coming back; anything else means the vector was not filled.
         if usize::try_from(rc) != Ok(dimension) {
-            return Err(Error::Embed);
+            let detail = if rc > 0 {
+                format!("engine wrote {rc} floats, expected {dimension}")
+            } else {
+                ffi::or_unexplained(guard.last_error(), "needle_embed", rc)
+            };
+            return Err(Error::EmbedFailed { detail });
         }
+        drop(guard);
 
         Ok(vector)
     }
@@ -664,7 +695,8 @@ impl Needle {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Embed`] when the engine does not report a dimension.
+    /// Returns [`Error::EmbedFailed`] with the engine's reason when it does not report a
+    /// dimension.
     pub fn embedding_dimension(&mut self) -> Result<usize> {
         if let Some(dimension) = self.dimension {
             return Ok(dimension);
@@ -673,11 +705,17 @@ impl Needle {
         // A null buffer is the documented way to ask for the count without computing anything.
         // The engine needs one input, and an empty text is the cheapest one there is: measured
         // against the pinned engine, it returns 3072 in about a microsecond.
-        let rc = ffi::lock().embed_len(Input::Text(c""))?;
-        let dimension = usize::try_from(rc).map_err(|_| Error::Embed)?;
-        if dimension == 0 {
-            return Err(Error::Embed);
-        }
+        let mut guard = ffi::lock();
+        let rc = guard.embed_len(Input::Text(c""))?;
+        let dimension = match usize::try_from(rc) {
+            Ok(dimension) if dimension > 0 => dimension,
+            _ => {
+                return Err(Error::EmbedFailed {
+                    detail: ffi::or_unexplained(guard.last_error(), "needle_embed", rc),
+                });
+            }
+        };
+        drop(guard);
 
         self.dimension = Some(dimension);
         Ok(dimension)
@@ -794,24 +832,38 @@ mod tests {
     }
 
     #[test]
-    fn the_buffer_never_exceeds_an_int() {
-        let capacity = CompleteOptions::new()
-            .with_max_new_tokens(u32::MAX)
-            .output_capacity();
-        assert_eq!(capacity, i32::MAX as usize);
+    fn the_buffer_never_exceeds_the_cap() {
+        for budget in [65_472, 65_536, 1 << 20, u32::MAX] {
+            let capacity = CompleteOptions::new()
+                .with_max_new_tokens(budget)
+                .output_capacity();
+            assert_eq!(capacity, MAX_OUTPUT_CAPACITY, "budget {budget}");
+        }
+        assert_eq!(MAX_OUTPUT_CAPACITY, 4 * 1024 * 1024);
+        // The C API takes an `int`, and the cap keeps the buffer far below one.
+        assert!(MAX_OUTPUT_CAPACITY < i32::MAX as usize);
     }
 
     #[test]
-    fn an_audio_turn_gets_headroom_within_an_int() {
-        let small = CompleteOptions::new().output_capacity() + AUDIO_HEADROOM;
-        assert_eq!(small, MIN_OUTPUT_CAPACITY + 64 * 1024);
+    fn the_cap_leaves_budgets_below_it_alone() {
+        let capacity = CompleteOptions::new()
+            .with_max_new_tokens(65_000)
+            .output_capacity();
+        assert_eq!(capacity, 4096 + 65_000 * 64);
+        assert!(capacity < MAX_OUTPUT_CAPACITY);
+    }
 
-        let huge = CompleteOptions::new()
-            .with_max_new_tokens(u32::MAX)
-            .output_capacity()
-            .saturating_add(AUDIO_HEADROOM)
-            .min(i32::MAX as usize);
-        assert_eq!(huge, i32::MAX as usize);
+    #[test]
+    fn an_audio_turn_gets_headroom_within_the_cap() {
+        let small = CompleteOptions::new().audio_output_capacity();
+        assert_eq!(small, MIN_OUTPUT_CAPACITY + AUDIO_HEADROOM);
+
+        for budget in [65_000, 65_536, u32::MAX] {
+            let capacity = CompleteOptions::new()
+                .with_max_new_tokens(budget)
+                .audio_output_capacity();
+            assert_eq!(capacity, MAX_OUTPUT_CAPACITY, "budget {budget}");
+        }
     }
 
     #[test]
