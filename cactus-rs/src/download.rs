@@ -38,6 +38,9 @@ const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 /// Age past which a `.partial` file is taken to belong to a process that died.
 const STALE_AFTER: Duration = Duration::from_secs(60 * 60);
 
+/// Where downloads come from unless `HF_ENDPOINT` names a mirror.
+const HF_DEFAULT_ENDPOINT: &str = "https://huggingface.co";
+
 /// Where one archive lives upstream, what it must hash to, and where it is cached.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Pin {
@@ -57,11 +60,19 @@ pub(crate) struct Pin {
 }
 
 impl Pin {
-    /// The download URL at the pinned revision.
+    /// The download URL at the pinned revision, from `HF_ENDPOINT` or Hugging Face itself.
     fn url(&self) -> String {
+        self.url_with(&endpoint(env::var("HF_ENDPOINT").ok().as_deref()))
+    }
+
+    /// The download URL at the pinned revision on the hub at `endpoint`.
+    fn url_with(&self, endpoint: &str) -> String {
         format!(
-            "https://huggingface.co/{}/resolve/{}/{}",
-            self.repo, self.revision, self.file
+            "{}/{}/resolve/{}/{}",
+            endpoint.trim_end_matches('/'),
+            self.repo,
+            self.revision,
+            self.file
         )
     }
 
@@ -83,11 +94,12 @@ impl Pin {
 ///    tried. Its bytes are not checked against the pin: pointing at a file is how a different
 ///    archive is used on purpose.
 /// 2. The cache file, used only if it still hashes to the pin.
-/// 3. A download from the pinned revision, verified against the pin and installed under a
-///    temporary name before being renamed into place, so an interrupted fetch never leaves a
-///    half-written cache entry. A cache that cannot be written is a slow next run, not a failed
-///    this one. Temporary files more than an hour old, left by fetches that died, are removed
-///    first.
+/// 3. A download from the pinned revision on `HF_ENDPOINT` (default `https://huggingface.co`),
+///    verified against the pin and installed under a temporary name before being renamed into
+///    place, so an interrupted fetch never leaves a half-written cache entry. A cache that
+///    cannot be written is a slow next run, not a failed this one. Temporary files more than an
+///    hour old, left by fetches that died, are removed first. With `HF_HUB_OFFLINE` set to
+///    anything but `0`, nothing is downloaded and a cache miss is an error.
 ///
 /// The download gives up on a connection after 30 s, on the response headers after 60 s and on
 /// the body after 900 s (`CACTUS_DOWNLOAD_TIMEOUT`, in seconds). Timeouts, dropped connections,
@@ -114,11 +126,25 @@ pub(crate) fn fetch(pin: &Pin) -> Result<Vec<u8>> {
         }
     }
 
+    let url = pin.url();
+    if offline(env::var("HF_HUB_OFFLINE").ok().as_deref()) {
+        return Err(Error::Download {
+            url,
+            detail: format!(
+                "offline mode is on (HF_HUB_OFFLINE is set), and {} is not in the cache at {}; \
+                 set {} to a local copy of the archive, copy it to that cache path, or unset \
+                 HF_HUB_OFFLINE",
+                pin.file,
+                cached.display(),
+                pin.env
+            ),
+        });
+    }
+
     if let Some(dir) = cached.parent() {
         remove_stale_partials(dir, pin.file, SystemTime::now());
     }
 
-    let url = pin.url();
     let agent = agent(body_timeout(
         env::var("CACTUS_DOWNLOAD_TIMEOUT").ok().as_deref(),
     ));
@@ -163,6 +189,23 @@ pub(crate) fn fetch(pin: &Pin) -> Result<Vec<u8>> {
 
     let _ = install(&cached, &bytes);
     Ok(bytes)
+}
+
+/// Whether `HF_HUB_OFFLINE` forbids the network: any value but empty or `0`, as in Hugging
+/// Face's own tools.
+fn offline(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        let value = value.trim();
+        !value.is_empty() && value != "0"
+    })
+}
+
+/// The hub to download from: `HF_ENDPOINT` without a trailing `/`, or Hugging Face itself.
+fn endpoint(value: Option<&str>) -> String {
+    match value.map(|value| value.trim().trim_end_matches('/')) {
+        Some(value) if !value.is_empty() => value.to_owned(),
+        _ => HF_DEFAULT_ENDPOINT.to_owned(),
+    }
 }
 
 /// Why one download attempt failed, and whether another could succeed.
@@ -469,17 +512,46 @@ mod tests {
     #[test]
     fn urls_point_at_the_pinned_revision() {
         assert_eq!(
-            NEEDLE.url(),
+            NEEDLE.url_with(HF_DEFAULT_ENDPOINT),
             format!(
                 "https://huggingface.co/Cactus-Compute/needle3/resolve/{}/needle3.cact",
                 cactus_sys::NEEDLE_ENGINE_COMMIT
             )
         );
         assert_eq!(
-            WHISTLE.url(),
+            WHISTLE.url_with(HF_DEFAULT_ENDPOINT),
             "https://huggingface.co/Cactus-Compute/whistle/resolve/\
              b358ddadd89b7a713b5aa131f23032d3cca1b251/whistle.cact"
         );
+    }
+
+    #[test]
+    fn mirrors_replace_the_host_only() {
+        let expected = "https://hf-mirror.example/Cactus-Compute/whistle/resolve/\
+                        b358ddadd89b7a713b5aa131f23032d3cca1b251/whistle.cact";
+        assert_eq!(WHISTLE.url_with("https://hf-mirror.example"), expected);
+        assert_eq!(WHISTLE.url_with("https://hf-mirror.example/"), expected);
+        assert_eq!(
+            WHISTLE.url_with("http://localhost:8080/hub/"),
+            "http://localhost:8080/hub/Cactus-Compute/whistle/resolve/\
+             b358ddadd89b7a713b5aa131f23032d3cca1b251/whistle.cact"
+        );
+
+        assert_eq!(endpoint(None), HF_DEFAULT_ENDPOINT);
+        assert_eq!(endpoint(Some("")), HF_DEFAULT_ENDPOINT);
+        assert_eq!(endpoint(Some("/")), HF_DEFAULT_ENDPOINT);
+        assert_eq!(endpoint(Some("https://m.example//")), "https://m.example");
+    }
+
+    #[test]
+    fn offline_is_any_value_but_empty_or_zero() {
+        assert!(offline(Some("1")));
+        assert!(offline(Some("true")));
+        assert!(offline(Some("YES")));
+        assert!(!offline(Some("0")));
+        assert!(!offline(Some("")));
+        assert!(!offline(Some(" ")));
+        assert!(!offline(None));
     }
 
     #[test]

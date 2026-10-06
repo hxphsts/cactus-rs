@@ -6,8 +6,9 @@
 //! 1. feature `needle` off: nothing to link.
 //! 2. `DOCS_RS` set: documentation builds do not link the engine.
 //! 3. `CACTUS_NEEDLE_LIB_DIR`: link the archive the caller points at.
-//! 4. feature `download-binaries`: fetch the pinned archive for the target and verify its
-//!    SHA-256 against `prebuilt.toml`.
+//! 4. feature `download-binaries`: fetch the pinned archive for the target from `HF_ENDPOINT`
+//!    (default `https://huggingface.co`) and verify its SHA-256 against `prebuilt.toml`. With
+//!    `HF_HUB_OFFLINE` set (to anything but `0`) only an archive already in `OUT_DIR` is used.
 //! 5. otherwise: fail, naming both options.
 
 use std::env;
@@ -26,6 +27,8 @@ fn main() {
     println!("cargo::rerun-if-env-changed=CACTUS_NEEDLE_LIB_DIR");
     println!("cargo::rerun-if-env-changed=CACTUS_CXXSTDLIB");
     println!("cargo::rerun-if-env-changed=DOCS_RS");
+    println!("cargo::rerun-if-env-changed=HF_ENDPOINT");
+    println!("cargo::rerun-if-env-changed=HF_HUB_OFFLINE");
 
     // Single source of truth for the pin: `cactus_sys::NEEDLE_ENGINE_COMMIT` reads it back.
     println!(
@@ -151,10 +154,21 @@ fn downloaded_lib_dir() -> PathBuf {
         return out_dir;
     }
 
-    let url = format!(
-        "https://huggingface.co/{repo}/resolve/{commit}/{platform}/{ARCHIVE}",
-        repo = prebuilt("repo"),
-        commit = prebuilt("commit"),
+    if download::offline(env::var("HF_HUB_OFFLINE").ok().as_deref()) {
+        fail(&format!(
+            "cactus-sys: offline mode is on (HF_HUB_OFFLINE is set), and the Needle engine\n\
+             archive for `{platform}` has not been downloaded into this target directory yet.\n\
+             Help: set CACTUS_NEEDLE_LIB_DIR to a directory holding libneedle.a for your target,\n\
+             or unset HF_HUB_OFFLINE (or set it to 0) to allow the download."
+        ));
+    }
+
+    let endpoint = download::endpoint(env::var("HF_ENDPOINT").ok().as_deref());
+    let url = download::url_with(
+        &endpoint,
+        prebuilt("repo"),
+        prebuilt("commit"),
+        &format!("{platform}/{ARCHIVE}"),
     );
     download::fetch(&url, &out_dir, &archive, expected);
     out_dir
@@ -357,6 +371,33 @@ mod download {
     /// Age past which a `.partial` file is taken to belong to a build that died.
     const STALE_AFTER: Duration = Duration::from_secs(60 * 60);
 
+    /// Where downloads come from unless `HF_ENDPOINT` names a mirror.
+    const HF_DEFAULT_ENDPOINT: &str = "https://huggingface.co";
+
+    /// The download URL of `file` at `revision` of `repo` on the hub at `endpoint`.
+    pub fn url_with(endpoint: &str, repo: &str, revision: &str, file: &str) -> String {
+        format!(
+            "{}/{repo}/resolve/{revision}/{file}",
+            endpoint.trim_end_matches('/')
+        )
+    }
+
+    /// The hub to download from: `HF_ENDPOINT` without a trailing `/`, or Hugging Face itself.
+    pub fn endpoint(value: Option<&str>) -> String {
+        match value.map(|value| value.trim().trim_end_matches('/')) {
+            Some(value) if !value.is_empty() => value.to_owned(),
+            _ => HF_DEFAULT_ENDPOINT.to_owned(),
+        }
+    }
+
+    /// Whether `HF_HUB_OFFLINE` forbids the network: any value but empty or `0`.
+    pub fn offline(value: Option<&str>) -> bool {
+        value.is_some_and(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0"
+        })
+    }
+
     /// Why one download attempt failed, and whether another could succeed.
     enum Failure {
         /// A timeout, a dropped connection, a busy or failing server, or a corrupted transfer.
@@ -449,9 +490,9 @@ mod download {
                 "cactus-sys: could not download the Needle engine archive.\n\
                  url:   {url}\n\
                  error: gave up after {attempts} attempts; the last failed with: {detail}\n\
-                 Help: check network access to huggingface.co, raise CACTUS_DOWNLOAD_TIMEOUT or\n\
-                 CACTUS_DOWNLOAD_RETRIES, or build offline by setting CACTUS_NEEDLE_LIB_DIR to a\n\
-                 directory holding libneedle.a for your target."
+                 Help: check network access to the hub (HF_ENDPOINT, default huggingface.co),\n\
+                 raise CACTUS_DOWNLOAD_TIMEOUT or CACTUS_DOWNLOAD_RETRIES, or build offline by\n\
+                 setting CACTUS_NEEDLE_LIB_DIR to a directory holding libneedle.a for your target."
             )),
         };
 
@@ -605,8 +646,9 @@ mod download {
                     "cactus-sys: could not download the Needle engine archive.\n\
                      url:   {url}\n\
                      error: HTTP {status}\n\
-                     Help: check access to huggingface.co, or build offline by setting\n\
-                     CACTUS_NEEDLE_LIB_DIR to a directory holding libneedle.a for your target."
+                     Help: check access to the hub (HF_ENDPOINT, default huggingface.co), or\n\
+                     build offline by setting CACTUS_NEEDLE_LIB_DIR to a directory holding\n\
+                     libneedle.a for your target."
                 )));
             }
             let wait = response
@@ -665,8 +707,9 @@ mod download {
                 "cactus-sys: could not download the Needle engine archive.\n\
                  url:   {url}\n\
                  error: {error}\n\
-                 Help: check network access to huggingface.co, or build offline by setting\n\
-                 CACTUS_NEEDLE_LIB_DIR to a directory holding libneedle.a for your target."
+                 Help: check network access to the hub (HF_ENDPOINT, default huggingface.co), or\n\
+                 build offline by setting CACTUS_NEEDLE_LIB_DIR to a directory holding\n\
+                 libneedle.a for your target."
             ))
         } else {
             Failure::Transient {
