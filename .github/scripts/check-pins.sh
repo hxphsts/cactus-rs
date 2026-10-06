@@ -117,6 +117,8 @@ while IFS= read -r match; do
     for token in $(printf '%s\n' "$line" |
       grep -oE '("[0-9a-f]{8,39}"|[Cc]ommit `[0-9a-f]{7,39}`|[Mm]easured at `?[0-9a-f]{7,39}|[[:space:]]at `[0-9a-f]{7,39}`)' |
       grep -oE '[0-9a-f]{7,39}[`"]?$' | tr -d '`"' || true); do
+      # A run of digits alone is a number (a timeout, a byte count), not a commit.
+      case "$token" in *[a-f]*) ;; *) continue ;; esac
       is_prefix "$token" "$engine_commit" "$whistle_rev" ||
         fail "$where: \`$token\` names neither the engine pin $engine_commit nor the whistle pin $whistle_rev"
     done
