@@ -35,6 +35,7 @@
 
 use thiserror::Error as ThisError;
 
+use crate::archive::MAGIC;
 use crate::model::Model;
 
 /// The number of bytes of a bad engine envelope kept in [`Error::Envelope`].
@@ -42,6 +43,26 @@ use crate::model::Model;
 /// Envelopes run to a few hundred bytes of JSON and a truncated head is enough to recognise
 /// what came back; keeping all of it would put model output into log lines.
 const ENVELOPE_EXCERPT: usize = 200;
+
+/// What [`Error::UnsupportedWeights`] says about its tag.
+fn unsupported(tag: u32) -> String {
+    if tag == MAGIC {
+        format!(
+            "magic tag {tag:#010X} is right, but the tensor directory after it is truncated or \
+             malformed"
+        )
+    } else {
+        format!("magic tag {tag:#010X} is not a Needle 3 or Whistle archive")
+    }
+}
+
+/// The weights type each model is built from, as [`Error::WrongModel`] names it.
+const fn weights_type(model: Model) -> &'static str {
+    match model {
+        Model::Needle => "needle::Weights",
+        Model::Whistle => "whistle::Weights",
+    }
+}
 
 /// Everything that can go wrong while loading weights or driving the engine.
 ///
@@ -81,33 +102,38 @@ pub enum Error {
     )]
     WeightsAlreadyLoaded,
 
-    /// The engine loaded the archive as the other kind of model than the one being built.
+    /// The archive holds the other kind of model than the one being built.
     ///
-    /// Needle 3 and Whistle archives carry the same magic tag, so only the engine can tell them
-    /// apart. By the time it has, the archive is loaded: it stays in the process as the other
-    /// model, exactly as if it had been handed to that model's builder.
+    /// Needle 3 and Whistle archives carry the same magic tag, so the kind is read from the
+    /// archive's tensor directory before the engine sees it. A wrong archive is never loaded:
+    /// the engine would have swapped it in over the model of that kind.
     #[error(
         "the weights are not a {expected} archive\n\
-         Needle 3 and Whistle archives share one magic tag, and the engine read this one as the \
-         other model; it stays loaded as that model for the life of the process.\n\
-         Help: build a {expected} from {}, and hand this archive to the other model's builder.",
-        .expected.archive()
+         Needle 3 and Whistle archives share one magic tag, and this one holds the other model; \
+         it was not loaded.\n\
+         Help: build a {expected} from {} through {}, and hand this archive to the other \
+         model's builder.",
+        .expected.archive(),
+        weights_type(*.expected)
     )]
     WrongModel {
         /// The model that was being built.
         expected: Model,
     },
 
-    /// The archive is not a Needle 3 or Whistle `.cact` file.
+    /// The archive is not a Needle 3 or Whistle `.cact` file: a wrong magic tag, or the right
+    /// one over a tensor directory that cannot be read.
     #[error(
-        "unsupported weights: magic tag {tag:#010X} is not a Needle 3 or Whistle archive\n\
+        "unsupported weights: {}\n\
          Needle 3 and Whistle archives start with the little-endian tag 0x05E12A84; 0x05E12A83 \
          is a Needle 2 archive, which the linked engine cannot read.\n\
          Help: download needle3.cact from Cactus-Compute/needle3 or whistle.cact from \
-         Cactus-Compute/whistle, or call Weights::fetch()."
+         Cactus-Compute/whistle, or call Weights::fetch().",
+        unsupported(*.tag)
     )]
     UnsupportedWeights {
-        /// The little-endian `u32` read from the first four bytes of the archive.
+        /// The little-endian `u32` read from the first four bytes of the archive. It is the
+        /// right tag, 0x05E12A84, when the tensor directory after it is truncated or malformed.
         tag: u32,
     },
 
@@ -499,6 +525,7 @@ mod tests {
                 expected: Model::Whistle,
             },
             Error::UnsupportedWeights { tag: 0 },
+            Error::UnsupportedWeights { tag: MAGIC },
             Error::Load,
             Error::LoadFailed {
                 model: Model::Whistle,
@@ -628,6 +655,19 @@ mod tests {
         .to_string();
         assert!(message.starts_with("the weights are not a Whistle archive"));
         assert!(message.contains("whistle.cact"));
+        assert!(message.contains("whistle::Weights"));
+        assert!(message.contains("it was not loaded"));
+        assert!(!message.contains("stays loaded"));
+    }
+
+    #[test]
+    fn unsupported_weights_tells_a_bad_tag_from_a_bad_directory() {
+        let tag = Error::UnsupportedWeights { tag: 0x05E1_2A83 }.to_string();
+        assert!(tag.contains("0x05E12A83 is not a Needle 3 or Whistle archive"));
+
+        let directory = Error::UnsupportedWeights { tag: MAGIC }.to_string();
+        assert!(directory.contains("tensor directory"));
+        assert!(!directory.contains("is not a Needle 3"));
     }
 
     #[test]

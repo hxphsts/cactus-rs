@@ -46,6 +46,34 @@ fn skipped(what: &str) {
     println!("skipping {what}: set CACTUS_NEEDLE_WEIGHTS to a needle3.cact to run it");
 }
 
+/// A header with the right magic tag and a tensor directory the crate can read, so the archive
+/// classifies as a Whistle (with an audio manifest) or a Needle 3 (without), over nothing the
+/// engine could load.
+fn fake_archive(whistle: bool) -> Vec<u8> {
+    // 196-byte header (magic, tensor count, codebook size, ...), then 44-byte records.
+    let mut bytes = vec![0_u8; 196];
+    bytes[..4].copy_from_slice(&[0x84, 0x2A, 0xE1, 0x05]);
+    bytes[4..8].copy_from_slice(&1_u32.to_le_bytes());
+
+    let data = 196_u64 + 44;
+    let mut record = [0_u8; 44];
+    record[0] = 2; // FP32
+    record[1] = 1; // one dimension
+    record[4..8].copy_from_slice(&13_u32.to_le_bytes());
+    record[20..28].copy_from_slice(&data.to_le_bytes());
+    record[28..36].copy_from_slice(&52_u64.to_le_bytes());
+    bytes.extend_from_slice(&record);
+
+    // Thirteen values; the 16 kHz sample rate at index 9 is what marks Whistle's manifest.
+    let rate = if whistle { 16_000.0_f32 } else { 8_000.0 };
+    for i in 0..13_u8 {
+        let value = if i == 9 { rate } else { f32::from(i) };
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes.extend(std::iter::repeat_n(0x5A, 4096));
+    bytes
+}
+
 /// The one tool these tests declare: enough for the engine to have something to reach for.
 fn set_light() -> Tool {
     Tool::new(
@@ -283,10 +311,9 @@ fn a_different_archive_cannot_replace_the_loaded_one() {
         .expect("the engine is free");
     drop(loaded);
 
-    // A valid Needle 3 header over bytes that are not the loaded archive: it gets past the magic
-    // check and is stopped by the fingerprint, so the engine never sees it.
-    let other = Weights::from_bytes(vec![0x84, 0x2A, 0xE1, 0x05, 0xDE, 0xAD, 0xBE, 0xEF])
-        .expect("the tag is a Needle 3 tag");
+    // A well-formed Needle 3 header over bytes that are not the loaded archive: it reads as a
+    // Needle archive and is stopped by the fingerprint, so the engine never sees it.
+    let other = Weights::from_bytes(fake_archive(false)).expect("the tag is a Needle 3 tag");
     let error = Needle::builder(other)
         .build()
         .expect_err("a second archive is refused");
@@ -360,12 +387,10 @@ fn audio_needs_the_speech_model_loaded() {
 fn the_engine_says_why_it_rejected_an_archive() {
     let _engine = lock();
 
-    // The right magic tag over bytes that are no model: past the crate's check, so only the
-    // engine can refuse it. Nothing is loaded by the refusal, and this binary never loads a
+    // A Whistle-shaped directory over bytes that are no model: past the crate's checks, so only
+    // the engine can refuse it. A rejected load changes nothing, and this binary never loads a
     // speech model otherwise, so later tests still see none.
-    let mut bytes = vec![0x84, 0x2A, 0xE1, 0x05];
-    bytes.extend(std::iter::repeat_n(0x5A, 4096));
-    let junk = whistle::Weights::from_bytes(bytes).expect("the tag is right");
+    let junk = whistle::Weights::from_bytes(fake_archive(true)).expect("the tag is right");
     let error = Whistle::builder(junk)
         .build()
         .expect_err("junk is not a model");
@@ -405,4 +430,60 @@ fn a_prefix_too_long_for_the_context_reports_its_token_count() {
         detail.chars().any(|c| c.is_ascii_digit()) && detail.contains("token"),
         "no token count in: {detail}"
     );
+}
+
+#[test]
+fn a_malformed_directory_never_reaches_the_engine() {
+    let _engine = lock();
+
+    // The right magic tag over a tensor directory that runs past the end of the bytes.
+    let mut bytes = vec![0_u8; 196];
+    bytes[..4].copy_from_slice(&[0x84, 0x2A, 0xE1, 0x05]);
+    bytes[4..8].copy_from_slice(&1_000_u32.to_le_bytes());
+    let truncated = whistle::Weights::from_bytes(bytes).expect("the tag is right");
+    let error = Whistle::builder(truncated)
+        .build()
+        .expect_err("the directory cannot be read");
+
+    assert!(
+        matches!(error, Error::UnsupportedWeights { tag: 0x05E1_2A84 }),
+        "got {error:?}"
+    );
+}
+
+#[test]
+fn a_wrong_kind_archive_leaves_the_loaded_model_alone() {
+    let _engine = lock();
+    let (Some(weights), Some(path)) = (weights(), env::var_os("CACTUS_NEEDLE_WEIGHTS")) else {
+        skipped("the wrong-kind isolation test");
+        return;
+    };
+
+    let mut needle = Needle::builder(weights)
+        .system("You control the lights.")
+        .tool(set_light())
+        .build()
+        .expect("the engine is free");
+
+    // A Needle archive handed to Whistle. Had it reached the engine, it would have been loaded
+    // over the text model and dropped the prefix this Needle built.
+    let as_whistle = whistle::Weights::from_file(path).expect("both archives share one tag");
+    let error = Whistle::builder(as_whistle)
+        .build()
+        .expect_err("a Needle archive is not a Whistle archive");
+    assert!(
+        matches!(
+            error,
+            Error::WrongModel {
+                expected: Model::Whistle
+            }
+        ),
+        "got {error:?}"
+    );
+
+    // No reset, no rebuild: the prefix is still there.
+    let completion = needle
+        .complete("turn the kitchen light on")
+        .expect("the text model was not touched");
+    assert_eq!(completion.calls()[0].name(), "set_light");
 }
