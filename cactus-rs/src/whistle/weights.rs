@@ -4,9 +4,10 @@
 //!
 //! Whistle's weights are a 16.9 MB `whistle.cact` archive, and [`Weights`] is that archive in
 //! memory with its magic tag checked. The check rejects files that are no archive at all; it
-//! cannot reject a Needle archive, which carries the same tag. Only the engine can tell the two
-//! apart, so [`WhistleBuilder::build`](super::WhistleBuilder::build) reports a Needle archive as
-//! [`Error::WrongModel`](crate::Error::WrongModel).
+//! does not reject a Needle archive, which carries the same tag. The builder reads the tensor
+//! directory before loading, so [`WhistleBuilder::build`](super::WhistleBuilder::build) reports
+//! a Needle archive as [`Error::WrongModel`](crate::Error::WrongModel) without it reaching the
+//! engine.
 //!
 //! A `Weights` value is the bytes and nothing else. The engine copies what it needs during the
 //! load, so the value is dropped as soon as [`Whistle`](super::Whistle) has handed it over.

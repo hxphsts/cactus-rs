@@ -276,13 +276,13 @@
 //! - One value holds each model: a second [`NeedleBuilder::build`](needle::NeedleBuilder::build)
 //!   or [`WhistleBuilder::build`](whistle::WhistleBuilder::build) returns
 //!   [`Error::EngineBusy`] rather than calling into a model someone else is using
-//! - Weights are validated by magic tag before the engine sees them. Needle and Whistle archives
-//!   share one container format, so a Whistle archive handed to Needle (or the reverse) is
-//!   caught as [`Error::WrongModel`]: at once when it is already loaded as the other kind,
-//!   otherwise when the engine has read it. Loading the same bytes
-//!   again is skipped, which keeps a text model's conversation intact, and a second, different
-//!   archive of the same kind returns [`Error::WeightsAlreadyLoaded`] instead of being silently
-//!   ignored
+//! - Weights are validated before the engine sees them. Needle and Whistle archives share one
+//!   container format, so the builder reads the tensor directory to tell them apart, and a
+//!   Whistle archive handed to Needle (or the reverse) is [`Error::WrongModel`] without ever
+//!   being loaded. That matters because the engine replaces a loaded model on any successful
+//!   load. Loading the same bytes again is skipped, which keeps a text model's conversation
+//!   intact, and a second, different archive of the same kind returns
+//!   [`Error::WeightsAlreadyLoaded`] instead of replacing the one in use
 //! - Audio is checked before it crosses: a clip over 30 seconds is [`Error::AudioTooLong`], a
 //!   NaN or an infinity is [`Error::NonFiniteSample`], and a keyword that would split the
 //!   engine's newline-separated list is [`Error::InvalidKeyword`]. Transcription settings are
