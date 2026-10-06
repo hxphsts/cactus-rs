@@ -292,10 +292,11 @@ impl NeedleBuilder {
     ///
     /// Returns [`Error::EngineBusy`] when another [`Needle`] is alive,
     /// [`Error::WeightsAlreadyLoaded`] when the process already loaded a different archive,
-    /// [`Error::Load`] when the engine rejects the archive, [`Error::Tools`] when the tool
+    /// [`Error::LoadFailed`] when the engine rejects the archive, [`Error::Tools`] when the tool
     /// declarations cannot be serialised, [`Error::InteriorNul`] when the
     /// system prompt, the tool declarations or the tool index path contain a NUL byte, and
-    /// [`Error::Init`] when the engine cannot build the prefix.
+    /// [`Error::InitFailed`] with the engine's reason when it cannot build the prefix, such as a
+    /// prefix too long for the context window.
     pub fn build(self) -> Result<Needle> {
         // Taken first: the slot releases the engine on every path out of this function. It is
         // declared before the guard so that it drops after it: `Slot`'s `Drop` takes the lock.
@@ -324,7 +325,14 @@ impl NeedleBuilder {
 
         let rc = guard.init(system.as_deref(), &tools, tool_index.as_deref());
         if rc <= 0 {
-            return Err(Error::Init);
+            // Copied while the guard is held: the string is valid only until the next call.
+            let reason = guard.last_error();
+            let detail = if reason.is_empty() {
+                format!("needle_init returned {rc} and gave no reason")
+            } else {
+                format!("{reason} (needle_init returned {rc})")
+            };
+            return Err(Error::InitFailed { detail });
         }
 
         Ok(Needle {
@@ -631,8 +639,8 @@ impl Needle {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InteriorNul`] when the input holds a NUL byte, and [`Error::Embed`] when
-    /// the engine refuses the call.
+    /// Returns [`Error::InteriorNul`] when the input holds a NUL byte, and [`Error::EmbedFailed`]
+    /// with the engine's reason when it refuses the call.
     pub fn embed<S>(&mut self, input: S) -> Result<Vec<f32>>
     where
         S: AsRef<str>,
@@ -641,11 +649,18 @@ impl Needle {
         let input = c_string(input.as_ref(), "input")?;
 
         let mut vector = vec![0.0_f32; dimension];
-        let rc = ffi::lock().embed(Input::Text(&input), &mut vector)?;
+        let mut guard = ffi::lock();
+        let rc = guard.embed(Input::Text(&input), &mut vector)?;
         // Success is the dimension coming back; anything else means the vector was not filled.
         if usize::try_from(rc) != Ok(dimension) {
-            return Err(Error::Embed);
+            let detail = if rc > 0 {
+                format!("engine wrote {rc} floats, expected {dimension}")
+            } else {
+                ffi::or_unexplained(guard.last_error(), "needle_embed", rc)
+            };
+            return Err(Error::EmbedFailed { detail });
         }
+        drop(guard);
 
         Ok(vector)
     }
@@ -664,7 +679,8 @@ impl Needle {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Embed`] when the engine does not report a dimension.
+    /// Returns [`Error::EmbedFailed`] with the engine's reason when it does not report a
+    /// dimension.
     pub fn embedding_dimension(&mut self) -> Result<usize> {
         if let Some(dimension) = self.dimension {
             return Ok(dimension);
@@ -673,11 +689,17 @@ impl Needle {
         // A null buffer is the documented way to ask for the count without computing anything.
         // The engine needs one input, and an empty text is the cheapest one there is: measured
         // against the pinned engine, it returns 3072 in about a microsecond.
-        let rc = ffi::lock().embed_len(Input::Text(c""))?;
-        let dimension = usize::try_from(rc).map_err(|_| Error::Embed)?;
-        if dimension == 0 {
-            return Err(Error::Embed);
-        }
+        let mut guard = ffi::lock();
+        let rc = guard.embed_len(Input::Text(c""))?;
+        let dimension = match usize::try_from(rc) {
+            Ok(dimension) if dimension > 0 => dimension,
+            _ => {
+                return Err(Error::EmbedFailed {
+                    detail: ffi::or_unexplained(guard.last_error(), "needle_embed", rc),
+                });
+            }
+        };
+        drop(guard);
 
         self.dimension = Some(dimension);
         Ok(dimension)

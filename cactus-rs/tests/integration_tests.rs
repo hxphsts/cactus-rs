@@ -16,7 +16,9 @@ use std::env;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use cactus_rs::Error;
+use cactus_rs::Model;
 use cactus_rs::needle::{CompleteOptions, Needle, Tool, Weights};
+use cactus_rs::whistle::{self, Whistle};
 use serde_json::json;
 
 /// Serialises every engine-touching test in this binary.
@@ -352,4 +354,55 @@ fn audio_needs_the_speech_model_loaded() {
         .complete("turn the kitchen light on")
         .expect("the engine answers");
     assert!(!completion.calls().is_empty());
+}
+
+#[test]
+fn the_engine_says_why_it_rejected_an_archive() {
+    let _engine = lock();
+
+    // The right magic tag over bytes that are no model: past the crate's check, so only the
+    // engine can refuse it. Nothing is loaded by the refusal, and this binary never loads a
+    // speech model otherwise, so later tests still see none.
+    let mut bytes = vec![0x84, 0x2A, 0xE1, 0x05];
+    bytes.extend(std::iter::repeat_n(0x5A, 4096));
+    let junk = whistle::Weights::from_bytes(bytes).expect("the tag is right");
+    let error = Whistle::builder(junk)
+        .build()
+        .expect_err("junk is not a model");
+
+    let Error::LoadFailed { model, detail } = &error else {
+        panic!("expected Error::LoadFailed, got {error:?}");
+    };
+    assert_eq!(*model, Model::Whistle);
+    assert!(!detail.is_empty());
+    assert_eq!(error.detail(), Some(detail.as_str()));
+}
+
+#[test]
+fn a_prefix_too_long_for_the_context_reports_its_token_count() {
+    let _engine = lock();
+    let Some(weights) = weights() else {
+        skipped("the prefix-overflow test");
+        return;
+    };
+
+    let tools = (0..2_000).map(|i| {
+        Tool::new(
+            format!("tool_{i}"),
+            "Do one small thing",
+            json!({ "type": "object" }),
+        )
+    });
+    let error = Needle::builder(weights)
+        .tools(tools)
+        .build()
+        .expect_err("two thousand tools do not fit the context");
+
+    let Error::InitFailed { detail } = &error else {
+        panic!("expected Error::InitFailed, got {error:?}");
+    };
+    assert!(
+        detail.chars().any(|c| c.is_ascii_digit()) && detail.contains("token"),
+        "no token count in: {detail}"
+    );
 }

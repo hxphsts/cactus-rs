@@ -401,7 +401,7 @@ impl Slot {
     ///
     /// Returns [`Error::WeightsAlreadyLoaded`] when a different archive of this kind is loaded,
     /// [`Error::WrongModel`] when the archive is, or turns out to be, of the other kind, and
-    /// [`Error::Load`] when the engine rejects it.
+    /// [`Error::LoadFailed`] with the engine's reason when it rejects it.
     pub(crate) fn load(&self, guard: &mut Guard, bytes: &[u8]) -> Result<()> {
         let mine = self.kind;
         let other = mine.other();
@@ -424,8 +424,13 @@ impl Slot {
         }
 
         let before = guard.models();
-        if guard.load(bytes) < 0 {
-            return Err(Error::Load);
+        let rc = guard.load(bytes);
+        if rc < 0 {
+            // Copied while the guard is held: the string is valid only until the next call.
+            return Err(Error::LoadFailed {
+                model: mine.model(),
+                detail: or_unexplained(guard.last_error(), "needle_load", rc),
+            });
         }
         let after = guard.models();
         let gained = after & !before;
@@ -453,6 +458,15 @@ impl Slot {
             guard.0.loaded[other.index()].get_or_insert(wanted);
             Err(expected)
         }
+    }
+}
+
+/// The engine's reason, or a note of what failed when it gave none.
+pub(crate) fn or_unexplained(reason: String, call: &str, rc: c_int) -> String {
+    if reason.is_empty() {
+        format!("{call} returned {rc} and gave no reason")
+    } else {
+        reason
     }
 }
 
