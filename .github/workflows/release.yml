@@ -15,7 +15,7 @@ jobs:
   verify:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       # A release is a tag on main. A tag on any other commit stops here, before anything runs.
@@ -26,10 +26,38 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - name: tag matches the workspace version
+      # Both crates ship at the tag's version, and cactus-rs asks for exactly that cactus-sys.
+      - name: tag matches both crate versions
         run: |
-          version=$(cargo metadata --no-deps --format-version 1 | python3 -c "import json,sys; print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name'] == 'cactus-rs'))")
-          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME is not v$version"; exit 1; }
+          version="${GITHUB_REF_NAME#v}"
+          cargo metadata --no-deps --format-version 1 > "$RUNNER_TEMP/metadata.json"
+          for crate in cactus-sys cactus-rs; do
+            found=$(jq -r --arg c "$crate" '.packages[] | select(.name == $c) | .version' "$RUNNER_TEMP/metadata.json")
+            [ "$found" = "$version" ] || { echo "$crate is at $found, but the tag is $GITHUB_REF_NAME"; exit 1; }
+          done
+          requirement=$(jq -r '.packages[] | select(.name == "cactus-rs") | .dependencies[] | select(.name == "cactus-sys") | .req' "$RUNNER_TEMP/metadata.json")
+          case "$requirement" in
+            "^$version" | "=$version") ;;
+            *) echo "cactus-rs requires cactus-sys $requirement, not $version"; exit 1 ;;
+          esac
+      # CHANGELOG.md is the one source of release notes, so the version needs a dated, non-empty section.
+      - name: changelog has a section for the version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          heading="## [$version] - "
+          grep -qE "^## \[${version//./\\.}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md ||
+            { echo "CHANGELOG.md has no '${heading}YYYY-MM-DD' heading"; exit 1; }
+          awk -v v="$version" '$0 ~ "^## \\[" v "\\]" {on=1; next} on && /^## \[/ {exit} on' CHANGELOG.md | grep -q '[^[:space:]]' ||
+            { echo "the CHANGELOG.md section for $version is empty"; exit 1; }
+      - name: pins agree everywhere they are copied
+        run: .github/scripts/check-pins.sh
+      # Against the latest crates.io release. DOCS_RS keeps the builds from fetching the engine.
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: cactus-sys, cactus-rs
+          rust-toolchain: manual
+        env:
+          DOCS_RS: "1"
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all --all-features
@@ -43,7 +71,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # A version that is already on crates.io is skipped, so re-running a tag is harmless.
       - name: which crates still need publishing
         id: missing
@@ -80,13 +108,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      # CHANGELOG.md is the one source of release notes: the tagged version's section, verbatim.
+      - uses: actions/checkout@v7
+      # The tagged version's CHANGELOG.md section, verbatim; `verify` already checked it exists.
       - name: release notes from the changelog
         run: |
           version="${GITHUB_REF_NAME#v}"
           awk -v v="$version" '$0 ~ "^## \\[" v "\\]" {on=1; next} on && /^## \[/ {exit} on' CHANGELOG.md > notes.md
-          grep -q '[^[:space:]]' notes.md || { echo "CHANGELOG.md has no section for $version"; exit 1; }
           printf '\n**Crates:** [cactus-rs %s](https://crates.io/crates/cactus-rs/%s) · [cactus-sys %s](https://crates.io/crates/cactus-sys/%s) · [docs](https://docs.rs/cactus-rs/%s)\n' \
             "$version" "$version" "$version" "$version" "$version" >> notes.md
       - run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
