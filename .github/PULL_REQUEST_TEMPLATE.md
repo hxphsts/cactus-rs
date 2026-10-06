@@ -11,6 +11,9 @@ Brief description of changes.
 - [ ] MSRV holds (`cargo +1.85 check --all`)
 - [ ] Offline build works (`DOCS_RS=1 cargo check -p cactus-rs --no-default-features`)
 - [ ] Crates package (`cargo package --workspace`)
+- [ ] Dependency policy holds (`cargo deny check`)
+- [ ] No unintended semver break against the last release (`DOCS_RS=1 cargo semver-checks`)
+- [ ] Pins agree everywhere they are copied (`.github/scripts/check-pins.sh`)
 - [ ] Documentation updated
 - [ ] CHANGELOG.md updated
 

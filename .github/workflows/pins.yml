@@ -1,0 +1,116 @@
+name: Upstream pins
+
+# Weekly: has Cactus Compute moved either Hugging Face repository past the commit we pin? On
+# drift, one issue per repository carries everything needed to move the pin.
+on:
+  schedule:
+    - cron: "37 5 * * 1" # Mondays 05:37 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: compare upstream heads with the pins
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api=https://huggingface.co/api/models
+          prebuilt=cactus-sys/prebuilt.toml
+          whistle_rs=cactus-rs/src/whistle/weights.rs
+
+          needle_repo=$(sed -nE 's/^repo = "([^"]+)"$/\1/p' "$prebuilt")
+          needle_pin=$(sed -nE 's/^commit = "([0-9a-f]{40})"$/\1/p' "$prebuilt")
+          whistle_repo=$(sed -nE 's/^    repo: "([^"]+)",$/\1/p' "$whistle_rs")
+          whistle_pin=$(sed -nE 's/^pub const WEIGHTS_REVISION: &str = "([0-9a-f]{40})";$/\1/p' "$whistle_rs")
+          for name in needle_repo needle_pin whistle_repo whistle_pin; do
+            [ -n "${!name}" ] || { echo "could not read $name from the sources"; exit 1; }
+          done
+
+          head_of() { curl -sSf "$api/$1" | jq -er .sha; }
+          tree_of() { curl -sSf "$api/$1/tree/$2?recursive=true"; }
+
+          # Opens the repository's drift issue, or retitles and rewrites the open one.
+          file_issue() { # file_issue REPO NEW_SHA BODY_FILE
+            local title="Upstream pin drift: $1 ${2:0:12}" number
+            number=$(gh issue list --state open --search "\"Upstream pin drift: $1\" in:title" \
+              --json number,title --jq "[.[] | select(.title | startswith(\"Upstream pin drift: $1 \"))][0].number // empty")
+            if [ -n "$number" ]; then
+              gh issue edit "$number" --title "$title" --body-file "$3"
+            else
+              gh issue create --title "$title" --body-file "$3"
+            fi
+          }
+
+          # Needle: the engine archives, the header and the text weights all live at one commit.
+          needle_head=$(head_of "$needle_repo")
+          if [ "$needle_head" != "$needle_pin" ]; then
+            tree=$(tree_of "$needle_repo" "$needle_head")
+            body=$(mktemp)
+            header_sha=$(curl -sSfL "https://huggingface.co/$needle_repo/resolve/$needle_head/macos-arm64/needle.h" | sha256sum | cut -d' ' -f1)
+            header_oids=$(jq -r '[.[] | select(.path | endswith("/needle.h")) | .oid] | unique | length' <<< "$tree")
+            old_platforms=$(sed -n '/^\[sha256\]/,$p' "$prebuilt" | sed -nE 's/^([a-z0-9_-]+) = .*/\1/p' | sort)
+            new_platforms=$(jq -r '.[] | select(.path | test("^[^/]+/libneedle\\.a$")) | .path | split("/")[0]' <<< "$tree" | sort)
+            {
+              echo "\`$needle_repo\` is at [\`$needle_head\`](https://huggingface.co/$needle_repo/tree/$needle_head); \`$prebuilt\` pins \`$needle_pin\`."
+              echo
+              echo "### \`$prebuilt\`"
+              echo
+              echo '```toml'
+              echo "commit = \"$needle_head\""
+              echo
+              echo "# sha256 of \`<platform>/libneedle.a\` at the commit above."
+              echo "[sha256]"
+              jq -r '.[] | select(.path | test("^[^/]+/libneedle\\.a$")) | "\(.path | split("/")[0]) = \"\(.lfs.oid // "NOT IN LFS: hash it by hand")\""' <<< "$tree" | sort
+              echo '```'
+              echo
+              echo "### \`needle.h\`"
+              echo
+              echo "sha256 \`$header_sha\` (\`macos-arm64/needle.h\`); $header_oids distinct header(s) across platforms. Update the comment in \`$prebuilt\`, \`cactus-sys/include/needle.h\` and \`cactus-sys/include/README.md\`."
+              echo
+              echo "### Platforms"
+              echo
+              platform_diff=$(diff -u --label pinned --label upstream <(echo "$old_platforms") <(echo "$new_platforms") || true)
+              if [ -z "$platform_diff" ]; then
+                echo "The same $(echo "$new_platforms" | wc -l | tr -d ' ') platforms as the pin."
+              else
+                printf '%s\n%s\n%s\n' '```diff' "$platform_diff" '```'
+                echo "Map a new platform in \`cactus-sys/build.rs\` before pinning it."
+              fi
+              echo
+              echo "### \`needle3.cact\` (\`cactus-rs/src/needle/weights.rs\` \`WEIGHTS_SHA256\`)"
+              echo
+              jq -r '.[] | select(.path == "needle3.cact") | "sha256 `\(.lfs.oid // "not in LFS")`, \(.size) bytes"' <<< "$tree"
+              echo
+              echo "Then run \`.github/scripts/check-pins.sh\` and re-measure the conformance baselines."
+            } > "$body"
+            cat "$body"
+            file_issue "$needle_repo" "$needle_head" "$body"
+          fi
+
+          # Whistle: one weight file.
+          whistle_head=$(head_of "$whistle_repo")
+          if [ "$whistle_head" != "$whistle_pin" ]; then
+            tree=$(tree_of "$whistle_repo" "$whistle_head")
+            body=$(mktemp)
+            {
+              echo "\`$whistle_repo\` is at [\`$whistle_head\`](https://huggingface.co/$whistle_repo/tree/$whistle_head); \`$whistle_rs\` pins \`$whistle_pin\`."
+              echo
+              echo '```rust'
+              echo "pub const WEIGHTS_REVISION: &str = \"$whistle_head\";"
+              jq -r '.[] | select(.path == "whistle.cact") | "pub const WEIGHTS_SHA256: &str = \"\(.lfs.oid // "NOT IN LFS")\";"' <<< "$tree"
+              echo '```'
+              echo
+              jq -r '.[] | select(.path == "whistle.cact") | "`whistle.cact`: \(.size) bytes."' <<< "$tree"
+              echo
+              echo "Then run \`.github/scripts/check-pins.sh\` and update the size in the docs and add a CHANGELOG entry."
+            } > "$body"
+            cat "$body"
+            file_issue "$whistle_repo" "$whistle_head" "$body"
+          fi
