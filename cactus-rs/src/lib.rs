@@ -49,7 +49,9 @@
 //!   [`Needle`](needle::Needle) or [`Whistle`](whistle::Whistle) is an [`Error::EngineBusy`],
 //!   not a data race
 //! - **Offline**: with `--no-default-features` and `CACTUS_NEEDLE_LIB_DIR` pointing at a local
-//!   archive, nothing is downloaded at build time or at run time
+//!   archive, nothing is downloaded at build time or at run time. `HF_ENDPOINT` points the
+//!   weight downloads at a Hugging Face mirror, and `HF_HUB_OFFLINE=1` makes them fail instead
+//!   of touching the network
 //!
 //! ## Quick Start
 //!

@@ -16,7 +16,8 @@
 //! - **Pinned Binaries**: the archive is fetched from one Hugging Face commit and checked
 //!   against a SHA-256 recorded in this crate
 //! - **Offline Builds**: point `CACTUS_NEEDLE_LIB_DIR` at a local archive and nothing is
-//!   downloaded
+//!   downloaded; `HF_ENDPOINT` selects a Hugging Face mirror and `HF_HUB_OFFLINE=1` refuses to
+//!   download at all
 //! - **No Dependencies**: `#![no_std]`, and no runtime crates
 //!
 //! ## Engines
@@ -25,7 +26,7 @@
 //! | --- | --- | --- | --- |
 //! | Needle 3 | `include/needle.h` | `needle` | supported |
 //! | Whistle | `include/needle.h` | `needle` | supported |
-//! | Cactus | `cactus_engine.h` | none yet | planned |
+//! | Cactus | `cactus_engine.h` | none | not planned: ARM64-only, no prebuilt archive, source-available licence |
 //!
 //! ## Linking
 //!
