@@ -5,7 +5,8 @@
 //! harness here is upstream's: one engine for the whole suite, the system prompt prefixed with a
 //! date fact as upstream's client does (pinned here, see [`DATE_FACT`]), a 512-token budget,
 //! `reset()` between cases, and the grounded calls of each turn compared with the expected calls
-//! as an order-insensitive multiset.
+//! as an order-insensitive multiset, after both sides are folded as upstream folds them (strings
+//! case-folded, integral floats made integers; see [`fold`]).
 //!
 //! Upstream's bar is at least 90% of the cases passing and none of the cases marked `critical`
 //! failing. The engine pinned by `cactus-sys` does not meet it, and neither does upstream's own
@@ -21,6 +22,7 @@
 //! The suite needs the engine, so it skips when `CACTUS_NEEDLE_WEIGHTS` names no readable
 //! archive. It never downloads: a 35 MB fetch is not something a test suite should do.
 
+use std::collections::BTreeMap;
 use std::env;
 use std::sync::{Mutex, PoisonError};
 
@@ -125,20 +127,54 @@ fn call_value(name: &str, arguments: &Value) -> Value {
     json!({ "name": name, "arguments": arguments })
 }
 
-/// Whether two call lists hold the same values, in any order.
-fn same_multiset(want: &[Value], got: &[Value]) -> bool {
-    if want.len() != got.len() {
-        return false;
+/// Upstream's `_fold`: strings case-folded and integral floats made integers, recursively.
+///
+/// Applied to both sides before comparing, so `35.0` matches `35` and `"Kitchen"` matches
+/// `"kitchen"`. Object keys are left alone, as upstream leaves them. Python's `casefold` is
+/// approximated by Unicode lowercasing, which agrees with it on every string the suite holds.
+fn fold(value: Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(text.to_lowercase()),
+        Value::Number(number) => match number.as_f64() {
+            // An integer stays as it is; only a float with no fractional part (within `i64`)
+            // becomes one.
+            Some(float) if number.is_f64() && float.fract() == 0.0 && float.abs() < 9.2e18 => {
+                Value::from(float as i64)
+            }
+            _ => Value::Number(number),
+        },
+        Value::Array(items) => Value::Array(items.into_iter().map(fold).collect()),
+        Value::Object(map) => Value::Object(map.into_iter().map(|(k, v)| (k, fold(v))).collect()),
+        other => other,
     }
+}
 
-    let mut unmatched: Vec<&Value> = got.iter().collect();
-    for wanted in want {
-        let Some(at) = unmatched.iter().position(|call| *call == wanted) else {
-            return false;
-        };
-        unmatched.swap_remove(at);
+/// Upstream's `_key`: the folded call as JSON with sorted keys.
+///
+/// `serde_json` keeps insertion order here (`preserve_order` is on), so keys are sorted by
+/// rebuilding every object through a `BTreeMap` before serialising.
+fn key(call: &Value) -> String {
+    fn sorted(value: Value) -> Value {
+        match value {
+            Value::Array(items) => Value::Array(items.into_iter().map(sorted).collect()),
+            Value::Object(map) => {
+                let ordered: BTreeMap<String, Value> =
+                    map.into_iter().map(|(k, v)| (k, sorted(v))).collect();
+                Value::Object(ordered.into_iter().collect())
+            }
+            other => other,
+        }
     }
-    true
+    serde_json::to_string(&sorted(fold(call.clone()))).unwrap_or_default()
+}
+
+/// Whether two call lists hold the same values, in any order, as upstream compares them.
+fn same_multiset(want: &[Value], got: &[Value]) -> bool {
+    let mut want: Vec<String> = want.iter().map(key).collect();
+    let mut got: Vec<String> = got.iter().map(key).collect();
+    want.sort_unstable();
+    got.sort_unstable();
+    want == got
 }
 
 /// A call list as one line of compact JSON, for the failure report.
@@ -258,4 +294,48 @@ fn attribution_survives_the_port() {
             .is_some_and(|source| source.contains("cactus-compute/needle")),
         "the fixture must keep pointing at its source"
     );
+}
+
+#[test]
+fn fold_makes_integral_floats_integers() {
+    assert_eq!(fold(json!(35.0)), json!(35));
+    assert_eq!(key(&json!({ "n": 35.0 })), key(&json!({ "n": 35 })));
+    assert!(same_multiset(
+        &[json!({ "name": "set", "arguments": { "degrees": 19 } })],
+        &[json!({ "name": "set", "arguments": { "degrees": 19.0 } })],
+    ));
+}
+
+#[test]
+fn fold_lowercases_strings_but_not_keys() {
+    assert_eq!(fold(json!("Kitchen")), json!("kitchen"));
+    assert_eq!(
+        fold(json!({ "Room": ["Kitchen"] })),
+        json!({ "Room": ["kitchen"] })
+    );
+    assert!(same_multiset(
+        &[json!({ "name": "lights", "arguments": { "room": "kitchen" } })],
+        &[json!({ "name": "lights", "arguments": { "room": "Kitchen" } })],
+    ));
+}
+
+#[test]
+fn fold_keeps_non_integral_floats_and_other_values() {
+    assert_eq!(fold(json!(19.5)), json!(19.5));
+    assert_ne!(key(&json!(19.5)), key(&json!(19)));
+    assert_eq!(fold(json!(true)), json!(true));
+    assert_eq!(fold(json!(null)), json!(null));
+    assert_eq!(fold(json!(-3)), json!(-3));
+}
+
+#[test]
+fn the_comparison_ignores_key_and_call_order() {
+    let a = json!({ "name": "a", "arguments": { "x": 1, "y": 2 } });
+    let a_reordered = json!({ "arguments": { "y": 2, "x": 1 }, "name": "a" });
+    let b = json!({ "name": "b", "arguments": {} });
+    assert!(same_multiset(
+        &[a.clone(), b.clone()],
+        &[b.clone(), a_reordered]
+    ));
+    assert!(!same_multiset(&[a.clone(), a.clone()], &[a, b]));
 }

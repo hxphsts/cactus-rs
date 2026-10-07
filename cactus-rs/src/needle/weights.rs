@@ -51,9 +51,10 @@ use crate::error::Result;
 /// feature, [`Weights::fetch`]. All three check the magic tag before returning.
 ///
 /// A Whistle archive carries the same magic tag, so it passes this check: the tag says "an
-/// archive this engine reads", not which model is inside. Only the engine can tell, and
+/// archive this engine reads", not which model is inside. The builder reads the tensor
+/// directory before loading, and
 /// [`NeedleBuilder::build`](crate::needle::NeedleBuilder::build) reports a Whistle archive as
-/// [`Error::WrongModel`](crate::Error::WrongModel).
+/// [`Error::WrongModel`](crate::Error::WrongModel) without it reaching the engine.
 ///
 /// # Examples
 ///

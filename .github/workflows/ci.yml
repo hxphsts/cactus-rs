@@ -10,11 +10,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # The weights the engine tests run against, pinned like the engine archive itself.
-  NEEDLE_WEIGHTS_URL: https://huggingface.co/Cactus-Compute/needle3/resolve/c7c415a3d1b3d929014bc6e866d51ebb971f7089/needle3.cact
-  NEEDLE_WEIGHTS_SHA256: c9d915eca282ed42d1a09b143b592adb4cc6744ffe2d294adf5cfc5548170c38
-  WHISTLE_WEIGHTS_URL: https://huggingface.co/Cactus-Compute/whistle/resolve/b358ddadd89b7a713b5aa131f23032d3cca1b251/whistle.cact
-  WHISTLE_WEIGHTS_SHA256: b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb
 
 jobs:
   # Two runners because the crate links a native static library: the archive,
@@ -25,12 +20,36 @@ jobs:
         os: [ubuntu-latest, macos-14]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y libc++-dev libc++abi-dev
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      # The weights the engine tests run against, read from the constants the crate itself pins,
+      # so a pin moves in one place: the Needle weights live at the engine commit in
+      # prebuilt.toml, the Whistle weights at WEIGHTS_REVISION.
+      - name: read the weight pins
+        run: |
+          rust_const() { sed -nE "s/^pub const $1: &str = \"([0-9a-f]+)\";$/\\1/p" "$2"; }
+          commit=$(sed -nE 's/^commit = "([0-9a-f]{40})"$/\1/p' cactus-sys/prebuilt.toml)
+          needle_repo=$(sed -nE 's/^repo = "([^"]+)"$/\1/p' cactus-sys/prebuilt.toml)
+          needle_sha=$(rust_const WEIGHTS_SHA256 cactus-rs/src/needle/weights.rs)
+          whistle_repo=$(sed -nE 's/^    repo: "([^"]+)",$/\1/p' cactus-rs/src/whistle/weights.rs)
+          whistle_rev=$(rust_const WEIGHTS_REVISION cactus-rs/src/whistle/weights.rs)
+          whistle_sha=$(rust_const WEIGHTS_SHA256 cactus-rs/src/whistle/weights.rs)
+          for name in commit needle_repo needle_sha whistle_repo whistle_rev whistle_sha; do
+            [ -n "${!name}" ] || { echo "could not read $name from the sources"; exit 1; }
+          done
+          {
+            echo "NEEDLE_WEIGHTS_URL=https://huggingface.co/$needle_repo/resolve/$commit/needle3.cact"
+            echo "NEEDLE_WEIGHTS_SHA256=$needle_sha"
+            echo "WHISTLE_WEIGHTS_URL=https://huggingface.co/$whistle_repo/resolve/$whistle_rev/whistle.cact"
+            echo "WHISTLE_WEIGHTS_SHA256=$whistle_sha"
+          } | tee -a "$GITHUB_ENV"
       # Without weights every engine test skips, so fetch them once and keep them cached.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: weights
           key: weights-${{ env.NEEDLE_WEIGHTS_SHA256 }}-${{ env.WHISTLE_WEIGHTS_SHA256 }}
@@ -46,65 +65,217 @@ jobs:
           } >> "$GITHUB_ENV"
       - run: cargo test --all --all-features
 
-  clippy:
-    runs-on: macos-14
+  clippy-matrix:
+    name: clippy (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      # The build script checks for libc++ on native Linux builds, clippy included.
+      - if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libc++-dev libc++abi-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
   fmt:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
-  doc:
-    runs-on: macos-14
+  # DOCS_RS skips the engine download and the libc++ check, so neither runner needs libc++.
+  doc-matrix:
+    name: doc (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
       - run: cargo doc --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
           DOCS_RS: "1"
 
-  msrv:
-    runs-on: macos-14
+  msrv-matrix:
+    name: msrv (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libc++-dev libc++abi-dev
       - uses: dtolnay/rust-toolchain@1.85
-      - run: cargo check --all
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - run: cargo check --workspace --all-features
+
+  # The main ruleset requires checks named `clippy`, `doc` and `msrv`. Each matrix leg reports
+  # under its own name, so these gates carry the bare names and fail unless every leg succeeded.
+  # `if: always()` makes a gate run and fail on a red leg instead of being skipped, which the
+  # ruleset would wait on forever.
+  clippy:
+    needs: clippy-matrix
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.clippy-matrix.result }}" = success
+
+  doc:
+    needs: doc-matrix
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.doc-matrix.result }}" = success
+
+  msrv:
+    needs: msrv-matrix
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.msrv-matrix.result }}" = success
 
   # No download feature: the build must refuse without an archive, and succeed with a local one.
   offline:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
       - name: refuses to build without an archive
         run: |
-          ! cargo build -p cactus-rs --no-default-features 2> refusal.log
+          if cargo build -p cactus-rs --no-default-features 2> refusal.log; then
+            echo "built without an engine archive"; exit 1
+          fi
           grep -q "CACTUS_NEEDLE_LIB_DIR" refusal.log
+      - name: read the engine pin
+        run: |
+          repo=$(sed -nE 's/^repo = "([^"]+)"$/\1/p' cactus-sys/prebuilt.toml)
+          commit=$(sed -nE 's/^commit = "([0-9a-f]{40})"$/\1/p' cactus-sys/prebuilt.toml)
+          sha=$(sed -nE 's/^macos-arm64 = "([0-9a-f]{64})"$/\1/p' cactus-sys/prebuilt.toml)
+          for name in repo commit sha; do
+            [ -n "${!name}" ] || { echo "could not read $name from cactus-sys/prebuilt.toml"; exit 1; }
+          done
+          {
+            echo "ENGINE_URL=https://huggingface.co/$repo/resolve/$commit/macos-arm64/libneedle.a"
+            echo "ENGINE_SHA256=$sha"
+          } | tee -a "$GITHUB_ENV"
       - name: builds against a local archive
         run: |
           mkdir -p engine
           curl -sfL "$ENGINE_URL" -o engine/libneedle.a
           echo "$ENGINE_SHA256  engine/libneedle.a" | shasum -a 256 -c -
           CACTUS_NEEDLE_LIB_DIR="$PWD/engine" cargo build -p cactus-rs --no-default-features
-        env:
-          ENGINE_URL: https://huggingface.co/Cactus-Compute/needle3/resolve/c7c415a3d1b3d929014bc6e866d51ebb971f7089/macos-arm64/libneedle.a
-          ENGINE_SHA256: a3b9163abe7b4bd52487c4005506cb35c5163bb9b9587af4ae07ed7587de697d
 
   # Both crates must build from their own tarballs, in dependency order.
   package:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
       - run: cargo package --workspace
+
+  # Public API against the latest crates.io release. DOCS_RS keeps both builds (current and
+  # baseline) from downloading or linking the engine; rustdoc JSON needs neither.
+  semver:
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [cactus-rs, cactus-sys]
+    runs-on: ubuntu-latest
+    env:
+      DOCS_RS: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: ${{ matrix.package }}
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: ${{ matrix.package }}
+          rust-toolchain: manual
+
+  # Licences, RustSec advisories, bans and sources, per deny.toml.
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # Every target the build script maps must still resolve, download and verify its archive.
+  # `cargo check` runs build scripts but links nothing, so no target sysroot is needed beyond a
+  # C compiler: build.rs compiles the libc++ shim for Linux targets, and ring (under ureq) has C
+  # sources on every target.
+  cross:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+            apt: gcc-aarch64-linux-gnu
+          - target: aarch64-linux-android
+            apt: ""
+          - target: x86_64-pc-windows-gnullvm
+            apt: gcc-mingw-w64-x86-64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - if: matrix.apt != ''
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.apt }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: ${{ matrix.target }}
+      - name: target C compiler
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          case "$TARGET" in
+            aarch64-unknown-linux-gnu)
+              echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" ;;
+            aarch64-linux-android)
+              ndk="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+              echo "CC_aarch64_linux_android=$ndk/aarch64-linux-android24-clang"
+              echo "AR_aarch64_linux_android=$ndk/llvm-ar" ;;
+            x86_64-pc-windows-gnullvm)
+              echo "CC_x86_64_pc_windows_gnullvm=x86_64-w64-mingw32-gcc" ;;
+          esac | tee -a "$GITHUB_ENV"
+      - run: cargo check --workspace --target ${{ matrix.target }}
+
+  # Every copy of a pinned value (engine commit, header and weight digests, crate version)
+  # agrees with its source of truth. Both runners, because the script must work with BSD tools.
+  pins:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: .github/scripts/check-pins.sh

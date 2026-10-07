@@ -114,7 +114,7 @@ impl WhistleBuilder {
     /// Returns [`Error::InvalidKeyword`] or [`Error::InteriorNul`] when a keyword in the options
     /// cannot be passed on, [`Error::EngineBusy`] when another [`Whistle`] is alive,
     /// [`Error::WeightsAlreadyLoaded`] when the process already loaded a different Whistle
-    /// archive, [`Error::WrongModel`] when the archive is a Needle archive, and [`Error::Load`]
+    /// archive, [`Error::WrongModel`] when the archive is a Needle archive, and [`Error::LoadFailed`]
     /// when the engine rejects it.
     pub fn build(self) -> Result<Whistle> {
         // Checked first: a bad keyword should not cost a 16.9 MB load.

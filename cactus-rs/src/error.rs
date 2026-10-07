@@ -8,14 +8,18 @@
 //! - **Engine ownership**: [`Error::EngineBusy`], [`Error::WeightsAlreadyLoaded`],
 //!   [`Error::WrongModel`]: the engine is one process-global runtime holding one model per kind,
 //!   so these report a rule of the C API rather than a failure
-//! - **Engine calls**: [`Error::Load`], [`Error::Init`], [`Error::Complete`],
-//!   [`Error::Truncated`], [`Error::Embed`], [`Error::InteriorNul`]
+//! - **Engine calls**: [`Error::LoadFailed`], [`Error::InitFailed`], [`Error::Complete`],
+//!   [`Error::Truncated`], [`Error::EmbedFailed`], [`Error::InteriorNul`]
 //! - **Audio**: [`Error::SpeechModelNotLoaded`], [`Error::AudioTooLong`],
 //!   [`Error::NonFiniteSample`], [`Error::Transcribe`], [`Error::EmbedAudio`],
 //!   [`Error::UnsupportedLanguage`], [`Error::InvalidKeyword`]
 //! - **Encoding and decoding**: [`Error::Tools`], [`Error::Envelope`], [`Error::Arguments`]
 //! - **Weights acquisition**: [`Error::UnsupportedWeights`], [`Error::Io`], [`Error::Download`],
 //!   [`Error::ChecksumMismatch`]
+//!
+//! [`Error::Load`], [`Error::Init`] and [`Error::Embed`] are kept so that code matching on them
+//! still compiles, but nothing returns them since 0.2.1: the `*Failed` variants replaced them and
+//! carry the engine's own reason, which [`Error::detail`] reads from any variant that has one.
 //!
 //! Every message is written for the person who will read it in a terminal: what happened, then a
 //! final `Help:` line saying what to do about it.
@@ -31,6 +35,7 @@
 
 use thiserror::Error as ThisError;
 
+use crate::archive::MAGIC;
 use crate::model::Model;
 
 /// The number of bytes of a bad engine envelope kept in [`Error::Envelope`].
@@ -38,6 +43,26 @@ use crate::model::Model;
 /// Envelopes run to a few hundred bytes of JSON and a truncated head is enough to recognise
 /// what came back; keeping all of it would put model output into log lines.
 const ENVELOPE_EXCERPT: usize = 200;
+
+/// What [`Error::UnsupportedWeights`] says about its tag.
+fn unsupported(tag: u32) -> String {
+    if tag == MAGIC {
+        format!(
+            "magic tag {tag:#010X} is right, but the tensor directory after it is truncated or \
+             malformed"
+        )
+    } else {
+        format!("magic tag {tag:#010X} is not a Needle 3 or Whistle archive")
+    }
+}
+
+/// The weights type each model is built from, as [`Error::WrongModel`] names it.
+const fn weights_type(model: Model) -> &'static str {
+    match model {
+        Model::Needle => "needle::Weights",
+        Model::Whistle => "whistle::Weights",
+    }
+}
 
 /// Everything that can go wrong while loading weights or driving the engine.
 ///
@@ -77,39 +102,42 @@ pub enum Error {
     )]
     WeightsAlreadyLoaded,
 
-    /// The engine loaded the archive as the other kind of model than the one being built.
+    /// The archive holds the other kind of model than the one being built.
     ///
-    /// Needle 3 and Whistle archives carry the same magic tag, so only the engine can tell them
-    /// apart. By the time it has, the archive is loaded: it stays in the process as the other
-    /// model, exactly as if it had been handed to that model's builder.
+    /// Needle 3 and Whistle archives carry the same magic tag, so the kind is read from the
+    /// archive's tensor directory before the engine sees it. A wrong archive is never loaded:
+    /// the engine would have swapped it in over the model of that kind.
     #[error(
         "the weights are not a {expected} archive\n\
-         Needle 3 and Whistle archives share one magic tag, and the engine read this one as the \
-         other model; it stays loaded as that model for the life of the process.\n\
-         Help: build a {expected} from {}, and hand this archive to the other model's builder.",
-        .expected.archive()
+         Needle 3 and Whistle archives share one magic tag, and this one holds the other model; \
+         it was not loaded.\n\
+         Help: build a {expected} from {} through {}, and hand this archive to the other \
+         model's builder.",
+        .expected.archive(),
+        weights_type(*.expected)
     )]
     WrongModel {
         /// The model that was being built.
         expected: Model,
     },
 
-    /// The archive is not a Needle 3 or Whistle `.cact` file.
+    /// The archive is not a Needle 3 or Whistle `.cact` file: a wrong magic tag, or the right
+    /// one over a tensor directory that cannot be read.
     #[error(
-        "unsupported weights: magic tag {tag:#010X} is not a Needle 3 or Whistle archive\n\
+        "unsupported weights: {}\n\
          Needle 3 and Whistle archives start with the little-endian tag 0x05E12A84; 0x05E12A83 \
          is a Needle 2 archive, which the linked engine cannot read.\n\
          Help: download needle3.cact from Cactus-Compute/needle3 or whistle.cact from \
-         Cactus-Compute/whistle, or call Weights::fetch()."
+         Cactus-Compute/whistle, or call Weights::fetch().",
+        unsupported(*.tag)
     )]
     UnsupportedWeights {
-        /// The little-endian `u32` read from the first four bytes of the archive.
+        /// The little-endian `u32` read from the first four bytes of the archive. It is the
+        /// right tag, 0x05E12A84, when the tensor directory after it is truncated or malformed.
         tag: u32,
     },
 
-    /// `needle_load` rejected the archive.
-    ///
-    /// The engine's own reason is not kept: the variant has no field for it.
+    /// Not returned since 0.2.1; see [`Error::LoadFailed`], which carries the engine's reason.
     #[error(
         "the engine rejected the weight archive\n\
          The magic tag was right but the engine could not load the bytes as a Needle 3 or \
@@ -118,7 +146,21 @@ pub enum Error {
     )]
     Load,
 
-    /// `needle_init` failed to build the conversation prefix.
+    /// `needle_load` rejected the archive; `detail` is the engine's own reason.
+    #[error(
+        "the engine rejected the {model} archive: {detail}\n\
+         The magic tag was right but the engine could not load the bytes, which usually means a \
+         truncated or corrupted download.\n\
+         Help: delete the cached archive and fetch it again, or verify its SHA-256."
+    )]
+    LoadFailed {
+        /// The model that was being built.
+        model: Model,
+        /// The engine's own reason, from `needle_last_error`.
+        detail: String,
+    },
+
+    /// Not returned since 0.2.1; see [`Error::InitFailed`], which carries the engine's reason.
     #[error(
         "the engine could not initialise the conversation prefix\n\
          needle_init returned a non-positive token count, which happens when the weights are not \
@@ -126,6 +168,21 @@ pub enum Error {
          Help: check that the tool index path exists and that the weights loaded successfully."
     )]
     Init,
+
+    /// `needle_init` failed; `detail` includes the engine's reason (e.g. the measured token count
+    /// when the prefix overflows the context).
+    #[error(
+        "the engine could not initialise the conversation prefix: {detail}\n\
+         The system prompt and the tool declarations must fit the context window together, and a \
+         tool index path must exist.\n\
+         Help: shorten the system prompt or declare fewer tools, and check that the tool index \
+         path exists."
+    )]
+    InitFailed {
+        /// The engine's own reason, from `needle_last_error`, with the count `needle_init`
+        /// returned.
+        detail: String,
+    },
 
     /// `needle_complete` failed, with whatever detail the engine wrote into the buffer.
     #[error(
@@ -149,13 +206,25 @@ pub enum Error {
         capacity: usize,
     },
 
-    /// `needle_embed` failed.
+    /// Not returned since 0.2.1; see [`Error::EmbedFailed`], which carries the engine's reason.
     #[error(
         "the engine failed to embed the input\n\
          needle_embed returned a negative value, which happens when no weights are loaded.\n\
          Help: build the Needle from valid weights before embedding."
     )]
     Embed,
+
+    /// `needle_embed` failed on text: the engine's reason, or a float-count mismatch ("engine
+    /// wrote N floats, expected D").
+    #[error(
+        "the engine failed to embed the input: {detail}\n\
+         Help: build the Needle from valid weights before embedding, and report the reason above \
+         if they are."
+    )]
+    EmbedFailed {
+        /// The engine's own reason, from `needle_last_error`, or the float-count mismatch.
+        detail: String,
+    },
 
     /// A string bound for the C API contains an interior NUL byte.
     #[error(
@@ -323,6 +392,38 @@ pub enum Error {
 }
 
 impl Error {
+    /// The underlying reason in the error's own words, for the variants that carry one.
+    ///
+    /// That is the engine's text for [`Error::Complete`], [`Error::Transcribe`],
+    /// [`Error::EmbedAudio`], [`Error::LoadFailed`], [`Error::InitFailed`] and
+    /// [`Error::EmbedFailed`], and the HTTP client's for [`Error::Download`]. Every other
+    /// variant returns `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use cactus_rs::Error;
+    ///
+    /// let err = Error::InitFailed {
+    ///     detail: "prefix of 40000 tokens exceeds the context".to_owned(),
+    /// };
+    /// assert_eq!(err.detail(), Some("prefix of 40000 tokens exceeds the context"));
+    /// assert_eq!(Error::EngineBusy.detail(), None);
+    /// ```
+    #[must_use]
+    pub fn detail(&self) -> Option<&str> {
+        match self {
+            Error::Complete { detail }
+            | Error::Transcribe { detail }
+            | Error::EmbedAudio { detail }
+            | Error::LoadFailed { detail, .. }
+            | Error::InitFailed { detail }
+            | Error::EmbedFailed { detail }
+            | Error::Download { detail, .. } => Some(detail),
+            _ => None,
+        }
+    }
+
     /// Builds an [`Error::Envelope`] with the response text truncated to a loggable excerpt.
     ///
     /// # Examples
@@ -374,7 +475,7 @@ mod tests {
     }
 
     /// How many variants [`Error`] has. Bump it with a new arm in [`variant_index`].
-    const VARIANTS: usize = 23;
+    const VARIANTS: usize = 26;
 
     /// A distinct number per variant.
     ///
@@ -405,6 +506,9 @@ mod tests {
             Error::Io(_) => 20,
             Error::Download { .. } => 21,
             Error::ChecksumMismatch { .. } => 22,
+            Error::LoadFailed { .. } => 23,
+            Error::InitFailed { .. } => 24,
+            Error::EmbedFailed { .. } => 25,
         }
     }
 
@@ -421,13 +525,24 @@ mod tests {
                 expected: Model::Whistle,
             },
             Error::UnsupportedWeights { tag: 0 },
+            Error::UnsupportedWeights { tag: MAGIC },
             Error::Load,
+            Error::LoadFailed {
+                model: Model::Whistle,
+                detail: "x".to_owned(),
+            },
             Error::Init,
+            Error::InitFailed {
+                detail: "x".to_owned(),
+            },
             Error::Complete {
                 detail: "x".to_owned(),
             },
             Error::Truncated { capacity: 1 },
             Error::Embed,
+            Error::EmbedFailed {
+                detail: "x".to_owned(),
+            },
             Error::InteriorNul { field: "input" },
             Error::InteriorNul { field: "keywords" },
             Error::SpeechModelNotLoaded,
@@ -483,6 +598,56 @@ mod tests {
     }
 
     #[test]
+    fn detail_is_the_carried_reason_and_nothing_else() {
+        for error in samples() {
+            let carries = matches!(
+                error,
+                Error::Complete { .. }
+                    | Error::Transcribe { .. }
+                    | Error::EmbedAudio { .. }
+                    | Error::LoadFailed { .. }
+                    | Error::InitFailed { .. }
+                    | Error::EmbedFailed { .. }
+                    | Error::Download { .. }
+            );
+            match error.detail() {
+                Some(detail) => {
+                    assert!(carries, "unexpected detail on {error:?}");
+                    assert!(error.to_string().contains(detail), "{error:?}");
+                }
+                None => assert!(!carries, "no detail on {error:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_failed_variants_carry_the_engines_words() {
+        let load = Error::LoadFailed {
+            model: Model::Needle,
+            detail: "bad tensor table".to_owned(),
+        };
+        assert_eq!(load.detail(), Some("bad tensor table"));
+        assert!(load.to_string().starts_with("the engine rejected the "));
+        assert!(load.to_string().contains("bad tensor table"));
+
+        let init = Error::InitFailed {
+            detail: "needle_init returned -1: 40000 tokens".to_owned(),
+        };
+        assert_eq!(init.detail(), Some("needle_init returned -1: 40000 tokens"));
+
+        let embed = Error::EmbedFailed {
+            detail: "engine wrote 12 floats, expected 3072".to_owned(),
+        };
+        assert_eq!(
+            embed.detail(),
+            Some("engine wrote 12 floats, expected 3072")
+        );
+        for error in [Error::Load, Error::Init, Error::Embed] {
+            assert_eq!(error.detail(), None);
+        }
+    }
+
+    #[test]
     fn wrong_model_names_both_the_model_and_its_archive() {
         let message = Error::WrongModel {
             expected: Model::Whistle,
@@ -490,6 +655,19 @@ mod tests {
         .to_string();
         assert!(message.starts_with("the weights are not a Whistle archive"));
         assert!(message.contains("whistle.cact"));
+        assert!(message.contains("whistle::Weights"));
+        assert!(message.contains("it was not loaded"));
+        assert!(!message.contains("stays loaded"));
+    }
+
+    #[test]
+    fn unsupported_weights_tells_a_bad_tag_from_a_bad_directory() {
+        let tag = Error::UnsupportedWeights { tag: 0x05E1_2A83 }.to_string();
+        assert!(tag.contains("0x05E12A83 is not a Needle 3 or Whistle archive"));
+
+        let directory = Error::UnsupportedWeights { tag: MAGIC }.to_string();
+        assert!(directory.contains("tensor directory"));
+        assert!(!directory.contains("is not a Needle 3"));
     }
 
     #[test]

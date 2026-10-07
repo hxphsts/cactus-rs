@@ -105,12 +105,13 @@ Intel macOS and Windows MSVC are not supported, because upstream ships no archiv
 
 ## Roadmap
 
-- The general Cactus engine (`cactus_engine.h`: chat, vision, streaming) as a second `cactus-sys` feature
 - Streaming and microphone capture
 - Clips longer than 30 s
 - The grounding layer upstream implements in Python
 - Tool-index persistence
 - Subprocess isolation for several tuned models
+
+Not planned: the general Cactus engine (`cactus_engine.h`). It builds for ARM64 only, ships no prebuilt archive or stable header, is distributed under a source-available licence that permits free use only below a funding and revenue threshold, and reports usage to Cactus Compute at every model load. Needle 2 is not planned either: its archive exports the same symbols as Needle 3, so the two cannot be linked into one binary. A Needle 2 archive handed to this crate is named as such in the error.
 
 ## Documentation
 

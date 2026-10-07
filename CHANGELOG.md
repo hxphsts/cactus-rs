@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.1] - 2026-10-06
+
+### Added
+
+- `Error::LoadFailed`, `Error::InitFailed` and `Error::EmbedFailed`, carrying the engine's own reason from `needle_last_error` (for `needle_init`, the measured token count when the prefix overflows the context), and `Error::detail()` to read the engine's words from any engine-call error
+
+### Changed
+
+- Load, init and text-embedding failures return the new variants; `Error::Load`, `Error::Init` and `Error::Embed` are no longer returned, so match the new variants instead
+- The output buffer is capped at 4 MiB however large `max_new_tokens` is; a budget of `u32::MAX` used to allocate about 2 GiB and keep it
+- Weight and engine downloads time out and retry transient failures with backoff (`CACTUS_DOWNLOAD_TIMEOUT`, `CACTUS_DOWNLOAD_RETRIES`); interrupted downloads older than an hour are removed from the cache
+- `HF_ENDPOINT` selects a Hugging Face mirror for weight and engine downloads; `HF_HUB_OFFLINE=1` never touches the network
+- A wrong-kind archive (`whistle::Weights` holding `needle3.cact`, or the reverse) is refused by reading its tensor directory, before anything reaches the engine; four probe tests in `cactus-sys/tests/` record that the engine replaces a loaded model on any successful load and drops the text init state on every text load
+- The conformance harness folds case and integral floats before comparing calls, as upstream's harness does
+- CI runs clippy and docs on Linux as well as macOS, checks the MSRV with all features, runs `cargo semver-checks` and `cargo deny`, cross-checks aarch64 Linux, Android and Windows gnullvm, verifies that the vendored header, pins and versions agree, and checks upstream weekly for new engine or weight revisions; releases verify both crate versions and the changelog before publishing
+- README: the general Cactus engine and Needle 2 are documented as not planned, with the reasons
+
 ## [0.2.0] - 2026-10-03
 
 ### Added

@@ -34,7 +34,7 @@ download = ["dep:ureq", "dep:sha2"]
 schemars = ["dep:schemars"]
 
 [dependencies]
-cactus-sys = { path = "../cactus-sys", version = "0.2.0", default-features = false, features = [
+cactus-sys = { path = "../cactus-sys", version = "0.2.1", default-features = false, features = [
     "needle",
 ] }
 serde = { version = "1.0", features = ["derive"] }
