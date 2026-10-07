@@ -65,7 +65,8 @@ jobs:
           } >> "$GITHUB_ENV"
       - run: cargo test --all --all-features
 
-  clippy:
+  clippy-matrix:
+    name: clippy (${{ matrix.os }})
     strategy:
       matrix:
         os: [ubuntu-latest, macos-14]
@@ -93,7 +94,8 @@ jobs:
       - run: cargo fmt --all -- --check
 
   # DOCS_RS skips the engine download and the libc++ check, so neither runner needs libc++.
-  doc:
+  doc-matrix:
+    name: doc (${{ matrix.os }})
     strategy:
       matrix:
         os: [ubuntu-latest, macos-14]
@@ -109,7 +111,8 @@ jobs:
           RUSTDOCFLAGS: -D warnings
           DOCS_RS: "1"
 
-  msrv:
+  msrv-matrix:
+    name: msrv (${{ matrix.os }})
     strategy:
       matrix:
         os: [ubuntu-latest, macos-14]
@@ -123,6 +126,31 @@ jobs:
         with:
           workspaces: ". -> target"
       - run: cargo check --workspace --all-features
+
+  # The main ruleset requires checks named `clippy`, `doc` and `msrv`. Each matrix leg reports
+  # under its own name, so these gates carry the bare names and fail unless every leg succeeded.
+  # `if: always()` makes a gate run and fail on a red leg instead of being skipped, which the
+  # ruleset would wait on forever.
+  clippy:
+    needs: clippy-matrix
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.clippy-matrix.result }}" = success
+
+  doc:
+    needs: doc-matrix
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.doc-matrix.result }}" = success
+
+  msrv:
+    needs: msrv-matrix
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.msrv-matrix.result }}" = success
 
   # No download feature: the build must refuse without an archive, and succeed with a local one.
   offline:
