@@ -96,7 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-With the `image` feature, `Image::open("photo.jpg")` decodes PNG and JPEG files and applies their EXIF orientation. Positions come back on a 0 to 1000 scale along each axis; `bbox.to_pixels(width, height)` converts them. Name a form field after the question it asks: the model reads the name.
+With the `image` feature, `Image::open("photo.jpg")` decodes PNG and JPEG files and applies their EXIF orientation. Positions come back on a 0 to 1000 scale along each axis; `bbox.to_pixels(width, height)` converts them. Name a form field after the question it asks: the model reads the name. Forms work for the scene and for things a description names (setting, objects, signs, colours); Mirage does not see gestures, faces or actions and answers such questions from their wording alone. The `mirage::form` docs give the measurements and a blank-frame test.
 
 ## Features
 
@@ -107,7 +107,7 @@ With the `image` feature, `Image::open("photo.jpg")` decodes PNG and JPEG files 
 - Speech embeddings, 512 floats per 80 ms frame
 - Voice to tool calls: `Needle::complete_audio` transcribes and answers in one engine call
 - Image description: scene, objects with boxes, scores and masks, text reading, relations, in seven languages
-- Image decisions: choices, counts, short text and boxes from a form, each with its probability
+- Image decisions about the scene and the objects in it: choices, counts, short text and boxes from a form, each with its probability
 - One model of each kind per process: a second `build()` of the same kind returns `Error::EngineBusy`; `Needle` and `Whistle` are `Send + Sync` and share one engine lock
 - Pinned, checksum-verified engine and weights, with fully offline builds
 - `cactus-sys` for the raw C API underneath
