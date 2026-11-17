@@ -63,6 +63,10 @@
 //! - Names and descriptions come in English, German, French, Spanish, Italian, Dutch or Polish
 //!   ([`Language`]). Text in the picture is reported as written.
 //! - The scores and probabilities are the model's own and are not calibrated.
+//! - A form answers questions about the scene and the things a description names. It does not
+//!   see gestures, faces or actions: it answers such questions from their wording, with high
+//!   probability and no relation to the picture. See [`form`] for the measurements and for the
+//!   blank-frame test that tells the two apart.
 
 pub mod description;
 pub mod engine;

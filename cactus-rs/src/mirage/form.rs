@@ -28,6 +28,29 @@
 //! with 0.71. Use the word a person would use for the thing being decided, and check the
 //! answers on pictures of your own before trusting a threshold.
 //!
+//! ## What a form can decide, and how to tell
+//!
+//! A form is answered from the picture and from the words of the question, and for some
+//! questions from the words alone. Measured on real photographs with the pinned model:
+//!
+//! - **Answered from the picture:** the scene and the things a [`Description`](super::Description)
+//!   names. Indoors or outdoors, which room, which of several objects and where it is, a road
+//!   sign, the colour of a plain surface.
+//! - **Not answered from the picture:** gestures, faces and what a person is doing. Asked
+//!   `gesture` with `thumbs up`, `thumbs down`, `open palm` and `fist`, the model said
+//!   `thumbs up` with 0.68 to 0.89 for photographs of a thumbs-down, a fist, a peace sign, an
+//!   open hand and a dog, and with 0.87 for a blank grey frame. Counts of people were wrong on every portrait
+//!   tried.
+//!
+//! The blank frame is the test. Ask the same form of a flat grey image of the same size: an
+//! answer that barely differs from it was not read from the picture, however high its
+//! probability. In those measurements, questions the model could not answer stayed within 0.3
+//! of the blank-frame distribution (half the summed absolute difference), and questions it
+//! answered well moved 0.5 or more. A large distance shows that the model looked, not that it is right.
+//!
+//! As a rule of thumb, describe the picture first: a form about something the description
+//! does not mention will not work.
+//!
 //! ## Usage
 //!
 //! ```rust
