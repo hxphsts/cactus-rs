@@ -136,3 +136,4 @@ jobs:
           }
           weights cactus-rs/src/needle/weights.rs needle3.cact
           weights cactus-rs/src/whistle/weights.rs whistle.cact
+          weights cactus-rs/src/mirage/weights.rs mirage.cact

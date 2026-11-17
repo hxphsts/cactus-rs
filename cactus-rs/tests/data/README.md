@@ -51,3 +51,35 @@ What Whistle hears in them, measured with the pinned engine and with upstream's 
 - `names_en.wav`: "Please call Chevorne and Crystal." with no keywords, and "Please call Shivorn
   and Krzysztof." with the keywords `Siobhan` and `Krzysztof`
 - `silence.wav`: an empty transcript with no language
+
+## images/
+
+### stop.png
+
+A 512 x 384 drawing made for this repository: a red octagon with the word STOP in white on a
+grey pole, over a green band and a light blue background. Used by `tests/mirage_tests.rs`, the
+`cactus-sys` probe `tests/probe_vision.rs` and the `describe` example. It is not a photograph and
+has no third-party source. ImageMagick 7.1.1 drew it:
+
+```sh
+magick -size 512x384 xc:'#8fb4d9' \
+  -fill '#5c7a3a' -draw 'rectangle 0,260 512,384' \
+  -fill '#777777' -draw 'rectangle 250,150 262,330' \
+  -fill '#c8102e' -draw 'polygon 226,60 286,60 328,102 328,162 286,204 226,204 184,162 184,102' \
+  -fill white -font Helvetica-Bold -pointsize 46 -gravity NorthWest -annotate +199+113 'STOP' \
+  -depth 8 -strip -define png:exclude-chunks=date,time stop.png
+```
+
+The lettering depends on the Helvetica installed where the command runs, so another machine
+gives slightly different pixels; the committed file is the fixture.
+
+- **sha256:** `8fa4f810c2486152f3b4cd01dae09f94391fa660d47ce00362d960319981eb52`
+- **Geometry, in pixels:** the octagon spans x 184 to 328 and y 60 to 204; the pole x 250 to 262
+  and y 150 to 330; the green band starts at y 260.
+
+What Mirage sees in it, measured with the pinned engine on macOS arm64:
+
+- objects: a "stop sign" at `[361, 174, 642, 517]` on the 0 to 1000 scale, a "pole" and "grass"
+- text: one line, "STOP", at `[370, 283, 632, 407]`
+- relations: the sign `attached_to` the pole
+- a form asking `stop`, `yield` or `speed limit` answers `stop` with probability 0.77

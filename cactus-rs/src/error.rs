@@ -3,7 +3,7 @@
 //! ## Overview
 //!
 //! One [`Error`] enum covers the whole crate, and [`Result<T>`] is the alias every fallible
-//! function returns. The variants split into five groups:
+//! function returns. The variants split into six groups:
 //!
 //! - **Engine ownership**: [`Error::EngineBusy`], [`Error::WeightsAlreadyLoaded`],
 //!   [`Error::WrongModel`]: the engine is one process-global runtime holding one model per kind,
@@ -13,6 +13,7 @@
 //! - **Audio**: [`Error::SpeechModelNotLoaded`], [`Error::AudioTooLong`],
 //!   [`Error::NonFiniteSample`], [`Error::Transcribe`], [`Error::EmbedAudio`],
 //!   [`Error::UnsupportedLanguage`], [`Error::InvalidKeyword`]
+//! - **Images**: [`Error::InvalidImage`], [`Error::ImageDecode`], [`Error::Describe`]
 //! - **Encoding and decoding**: [`Error::Tools`], [`Error::Envelope`], [`Error::Arguments`]
 //! - **Weights acquisition**: [`Error::UnsupportedWeights`], [`Error::Io`], [`Error::Download`],
 //!   [`Error::ChecksumMismatch`]
@@ -52,7 +53,7 @@ fn unsupported(tag: u32) -> String {
              malformed"
         )
     } else {
-        format!("magic tag {tag:#010X} is not a Needle 3 or Whistle archive")
+        format!("magic tag {tag:#010X} is not a Needle 3, Whistle or Mirage archive")
     }
 }
 
@@ -61,6 +62,7 @@ const fn weights_type(model: Model) -> &'static str {
     match model {
         Model::Needle => "needle::Weights",
         Model::Whistle => "whistle::Weights",
+        Model::Mirage => "mirage::Weights",
     }
 }
 
@@ -102,16 +104,16 @@ pub enum Error {
     )]
     WeightsAlreadyLoaded,
 
-    /// The archive holds the other kind of model than the one being built.
+    /// The archive holds another kind of model than the one being built.
     ///
-    /// Needle 3 and Whistle archives carry the same magic tag, so the kind is read from the
+    /// Needle 3, Whistle and Mirage archives carry the same magic tag, so the kind is read from the
     /// archive's tensor directory before the engine sees it. A wrong archive is never loaded:
     /// the engine would have swapped it in over the model of that kind.
     #[error(
         "the weights are not a {expected} archive\n\
-         Needle 3 and Whistle archives share one magic tag, and this one holds the other model; \
-         it was not loaded.\n\
-         Help: build a {expected} from {} through {}, and hand this archive to the other \
+         Needle 3, Whistle and Mirage archives share one magic tag, and this one holds another \
+         model; it was not loaded.\n\
+         Help: build a {expected} from {} through {}, and hand this archive to its own \
          model's builder.",
         .expected.archive(),
         weights_type(*.expected)
@@ -121,14 +123,14 @@ pub enum Error {
         expected: Model,
     },
 
-    /// The archive is not a Needle 3 or Whistle `.cact` file: a wrong magic tag, or the right
+    /// The archive is not a Needle 3, Whistle or Mirage `.cact` file: a wrong magic tag, or the right
     /// one over a tensor directory that cannot be read.
     #[error(
         "unsupported weights: {}\n\
-         Needle 3 and Whistle archives start with the little-endian tag 0x05E12A84; 0x05E12A83 \
-         is a Needle 2 archive, which the linked engine cannot read.\n\
-         Help: download needle3.cact from Cactus-Compute/needle3 or whistle.cact from \
-         Cactus-Compute/whistle, or call Weights::fetch().",
+         Needle 3, Whistle and Mirage archives start with the little-endian tag 0x05E12A84; \
+         0x05E12A83 is a Needle 2 archive, which the linked engine cannot read.\n\
+         Help: download needle3.cact, whistle.cact or mirage.cact from the Cactus-Compute \
+         repository of the same name, or call Weights::fetch().",
         unsupported(*.tag)
     )]
     UnsupportedWeights {
@@ -295,6 +297,47 @@ pub enum Error {
         detail: String,
     },
 
+    /// The pixel buffer does not hold the image its dimensions describe.
+    #[error(
+        "the image is {width} x {height} pixels but its buffer holds {len} bytes\n\
+         Mirage takes packed 8-bit RGB, three bytes per pixel and rows top to bottom, with a \
+         width and height of at least 1 and at most 2 147 483 647 bytes in all.\n\
+         Help: pass exactly width x height x 3 bytes; convert RGBA, BGR or padded rows first."
+    )]
+    InvalidImage {
+        /// The width that was given, in pixels.
+        width: u32,
+        /// The height that was given, in pixels.
+        height: u32,
+        /// The length of the buffer that was given, in bytes.
+        len: usize,
+    },
+
+    /// The bytes are not an image the `image` feature can decode.
+    #[error(
+        "the image could not be decoded: {detail}\n\
+         Help: pass a PNG or JPEG file, or decode the image yourself and hand the pixels to \
+         Image::from_rgb."
+    )]
+    ImageDecode {
+        /// The decoder's own reason.
+        detail: String,
+    },
+
+    /// `cactus_describe` failed, with the engine's reason.
+    ///
+    /// The engine checks the options and the form itself, so an option out of range or a form
+    /// field it cannot use arrives here, named in `detail`.
+    #[error(
+        "the engine failed to describe the image: {detail}\n\
+         Help: if the reason names an option or a form field, correct it; otherwise check that \
+         the Mirage weights loaded successfully."
+    )]
+    Describe {
+        /// The engine's own reason, from `cactus_last_error`.
+        detail: String,
+    },
+
     /// A language code is not one Whistle transcribes.
     #[error(
         "unsupported language {code:?}\n\
@@ -366,8 +409,8 @@ pub enum Error {
     /// Downloading the weight archive failed.
     #[error(
         "could not download weights from {url}: {detail}\n\
-         Help: retry, or download the archive by hand and point CACTUS_NEEDLE_WEIGHTS (Needle) \
-         or CACTUS_WHISTLE_WEIGHTS (Whistle) at it."
+         Help: retry, or download the archive by hand and point CACTUS_NEEDLE_WEIGHTS (Needle), \
+         CACTUS_WHISTLE_WEIGHTS (Whistle) or CACTUS_MIRAGE_WEIGHTS (Mirage) at it."
     )]
     Download {
         /// The URL that was being fetched.
@@ -395,8 +438,9 @@ impl Error {
     /// The underlying reason in the error's own words, for the variants that carry one.
     ///
     /// That is the engine's text for [`Error::Complete`], [`Error::Transcribe`],
-    /// [`Error::EmbedAudio`], [`Error::LoadFailed`], [`Error::InitFailed`] and
-    /// [`Error::EmbedFailed`], and the HTTP client's for [`Error::Download`]. Every other
+    /// [`Error::EmbedAudio`], [`Error::Describe`], [`Error::LoadFailed`], [`Error::InitFailed`]
+    /// and [`Error::EmbedFailed`], the image decoder's for [`Error::ImageDecode`], and the HTTP
+    /// client's for [`Error::Download`]. Every other
     /// variant returns `None`.
     ///
     /// # Examples
@@ -416,6 +460,8 @@ impl Error {
             Error::Complete { detail }
             | Error::Transcribe { detail }
             | Error::EmbedAudio { detail }
+            | Error::Describe { detail }
+            | Error::ImageDecode { detail }
             | Error::LoadFailed { detail, .. }
             | Error::InitFailed { detail }
             | Error::EmbedFailed { detail }
@@ -475,7 +521,7 @@ mod tests {
     }
 
     /// How many variants [`Error`] has. Bump it with a new arm in [`variant_index`].
-    const VARIANTS: usize = 26;
+    const VARIANTS: usize = 29;
 
     /// A distinct number per variant.
     ///
@@ -509,6 +555,9 @@ mod tests {
             Error::LoadFailed { .. } => 23,
             Error::InitFailed { .. } => 24,
             Error::EmbedFailed { .. } => 25,
+            Error::InvalidImage { .. } => 26,
+            Error::Describe { .. } => 27,
+            Error::ImageDecode { .. } => 28,
         }
     }
 
@@ -523,6 +572,20 @@ mod tests {
             },
             Error::WrongModel {
                 expected: Model::Whistle,
+            },
+            Error::WrongModel {
+                expected: Model::Mirage,
+            },
+            Error::InvalidImage {
+                width: 2,
+                height: 2,
+                len: 11,
+            },
+            Error::Describe {
+                detail: "x".to_owned(),
+            },
+            Error::ImageDecode {
+                detail: "x".to_owned(),
             },
             Error::UnsupportedWeights { tag: 0 },
             Error::UnsupportedWeights { tag: MAGIC },
@@ -605,6 +668,8 @@ mod tests {
                 Error::Complete { .. }
                     | Error::Transcribe { .. }
                     | Error::EmbedAudio { .. }
+                    | Error::Describe { .. }
+                    | Error::ImageDecode { .. }
                     | Error::LoadFailed { .. }
                     | Error::InitFailed { .. }
                     | Error::EmbedFailed { .. }
@@ -663,7 +728,7 @@ mod tests {
     #[test]
     fn unsupported_weights_tells_a_bad_tag_from_a_bad_directory() {
         let tag = Error::UnsupportedWeights { tag: 0x05E1_2A83 }.to_string();
-        assert!(tag.contains("0x05E12A83 is not a Needle 3 or Whistle archive"));
+        assert!(tag.contains("0x05E12A83 is not a Needle 3, Whistle or Mirage archive"));
 
         let directory = Error::UnsupportedWeights { tag: MAGIC }.to_string();
         assert!(directory.contains("tensor directory"));
@@ -679,6 +744,7 @@ mod tests {
         .to_string();
         assert!(message.contains("CACTUS_NEEDLE_WEIGHTS"));
         assert!(message.contains("CACTUS_WHISTLE_WEIGHTS"));
+        assert!(message.contains("CACTUS_MIRAGE_WEIGHTS"));
     }
 
     #[test]

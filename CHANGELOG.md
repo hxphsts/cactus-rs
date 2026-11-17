@@ -22,6 +22,13 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- `cactus-rs`: `mirage` module for Cactus Compute's Mirage vision model, loaded into the same engine as Needle and Whistle (`Mirage`, `MirageBuilder`, `Weights`, `Image`, `DescribeOptions`, `Section`, `Field`, `MaskFormat`, `Description`, `Object`, `Region`, `TextLine`, `Relation`, `BBox`, `Mask`, `Bitmap`)
+- `Mirage::describe`: the scene, objects with boxes, scores and masks, the text that can be read, relations and the model's reasoning, in one pass; names and descriptions in seven languages
+- `Mirage::extract` with `Form`: choices, counts, short text and boxes answered from the picture, each with its probability (`Answers`, `Answer`, `AnswerValue`, `ABSTAIN`)
+- Feature `image`: `Image::open` and `Image::decode` read PNG and JPEG files and apply their EXIF orientation
+- `mirage::Weights::fetch` downloads, verifies and caches `mirage.cact` (21.6 MB, revision `3d03cee8`); `CACTUS_MIRAGE_WEIGHTS` points at a local copy
+- `Model::Mirage`, `Error::InvalidImage`, `Error::ImageDecode` and `Error::Describe`
+- `cactus-sys/tests/probe_vision.rs` records what `cactus_describe` accepts, writes and refuses, which upstream does not document
 - `cactus-sys`: `CACTUS_VISION`, `CACTUS_ENGINE_VERSION`, and declarations for `cactus_describe`, `cactus_stream_transcribe_process`, `cactus_stream_transcribe_stop` and `cactus_set_threads`
 - `SECURITY.md`: how to report a vulnerability privately
 

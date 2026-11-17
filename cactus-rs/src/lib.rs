@@ -1,8 +1,8 @@
 //! # cactus-rs
 //!
-//! Safe Rust bindings for [Cactus Compute](https://cactuscompute.com)'s on-device engine and two of
-//! the models it runs: Needle 3 for tool calling, structured extraction and text embedding, and
-//! Whistle for speech-to-text. On the CPU, with no server.
+//! Safe Rust bindings for [Cactus Compute](https://cactuscompute.com)'s on-device engine and the
+//! three models it runs: Needle 3 for tool calling, structured extraction and text embedding,
+//! Whistle for speech-to-text, and Mirage for vision. On the CPU, with no server.
 //!
 //! ## What is Needle?
 //!
@@ -308,6 +308,7 @@
 //! - **`desktop.rs`**: a twelve-tool simulated desktop agent that scores itself against expected calls
 //! - **`transcribe.rs`**: a WAV file transcribed, with language, keywords and word timestamps
 //! - **`voice_lights.rs`**: a spoken request turned into light-switch calls by Needle
+//! - **`describe.rs`**: an image described and a decision made about it (needs the `image` feature)
 //!
 //! Run any example with `cargo run -p cactus-rs --example <name>`.
 
@@ -320,6 +321,7 @@ mod archive;
 mod download;
 pub mod error;
 mod ffi;
+pub mod mirage;
 mod model;
 pub mod needle;
 pub mod whistle;

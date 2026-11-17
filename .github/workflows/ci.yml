@@ -46,7 +46,11 @@ jobs:
           whistle_repo=$(sed -nE 's/^    repo: "([^"]+)",$/\1/p' cactus-rs/src/whistle/weights.rs)
           whistle_rev=$(rust_const WEIGHTS_REVISION cactus-rs/src/whistle/weights.rs)
           whistle_sha=$(rust_const WEIGHTS_SHA256 cactus-rs/src/whistle/weights.rs)
-          for name in needle_repo needle_rev needle_sha whistle_repo whistle_rev whistle_sha; do
+          mirage_repo=$(sed -nE 's/^    repo: "([^"]+)",$/\1/p' cactus-rs/src/mirage/weights.rs)
+          mirage_rev=$(rust_const WEIGHTS_REVISION cactus-rs/src/mirage/weights.rs)
+          mirage_sha=$(rust_const WEIGHTS_SHA256 cactus-rs/src/mirage/weights.rs)
+          for name in needle_repo needle_rev needle_sha whistle_repo whistle_rev whistle_sha \
+            mirage_repo mirage_rev mirage_sha; do
             [ -n "${!name}" ] || { echo "could not read $name from the sources"; exit 1; }
           done
           {
@@ -54,21 +58,26 @@ jobs:
             echo "NEEDLE_WEIGHTS_SHA256=$needle_sha"
             echo "WHISTLE_WEIGHTS_URL=https://huggingface.co/$whistle_repo/resolve/$whistle_rev/whistle.cact"
             echo "WHISTLE_WEIGHTS_SHA256=$whistle_sha"
+            echo "MIRAGE_WEIGHTS_URL=https://huggingface.co/$mirage_repo/resolve/$mirage_rev/mirage.cact"
+            echo "MIRAGE_WEIGHTS_SHA256=$mirage_sha"
           } | tee -a "$GITHUB_ENV"
       # Without weights every engine test skips, so fetch them once and keep them cached.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: weights
-          key: weights-${{ env.NEEDLE_WEIGHTS_SHA256 }}-${{ env.WHISTLE_WEIGHTS_SHA256 }}
+          key: weights-${{ env.NEEDLE_WEIGHTS_SHA256 }}-${{ env.WHISTLE_WEIGHTS_SHA256 }}-${{ env.MIRAGE_WEIGHTS_SHA256 }}
       - run: |
           mkdir -p weights
           [ -f weights/needle3.cact ] || curl -sfL "$NEEDLE_WEIGHTS_URL" -o weights/needle3.cact
           [ -f weights/whistle.cact ] || curl -sfL "$WHISTLE_WEIGHTS_URL" -o weights/whistle.cact
+          [ -f weights/mirage.cact ] || curl -sfL "$MIRAGE_WEIGHTS_URL" -o weights/mirage.cact
           echo "$NEEDLE_WEIGHTS_SHA256  weights/needle3.cact" | shasum -a 256 -c -
           echo "$WHISTLE_WEIGHTS_SHA256  weights/whistle.cact" | shasum -a 256 -c -
+          echo "$MIRAGE_WEIGHTS_SHA256  weights/mirage.cact" | shasum -a 256 -c -
           {
             echo "CACTUS_NEEDLE_WEIGHTS=$PWD/weights/needle3.cact"
             echo "CACTUS_WHISTLE_WEIGHTS=$PWD/weights/whistle.cact"
+            echo "CACTUS_MIRAGE_WEIGHTS=$PWD/weights/mirage.cact"
           } >> "$GITHUB_ENV"
       - run: cargo test --all --all-features
 

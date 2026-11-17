@@ -4,7 +4,7 @@ Brief description of changes.
 
 ## Checklist
 
-- [ ] Tests pass (`cargo test --all --all-features`), with `CACTUS_NEEDLE_WEIGHTS` and `CACTUS_WHISTLE_WEIGHTS` set so the engine tests run instead of skipping
+- [ ] Tests pass (`cargo test --all --all-features`), with `CACTUS_NEEDLE_WEIGHTS`, `CACTUS_WHISTLE_WEIGHTS` and `CACTUS_MIRAGE_WEIGHTS` set so the engine tests run instead of skipping
 - [ ] Clippy passes (`cargo clippy --all-targets --all-features -- -D warnings`)
 - [ ] Formatting checked (`cargo fmt --all -- --check`)
 - [ ] Docs build (`DOCS_RS=1 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features`)

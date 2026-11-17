@@ -13,9 +13,11 @@
 //! runs inside [`cactus_complete`] when it is handed a clip instead of a string, configured by
 //! [`cactus_set_audio`]. [`cactus_embed`] embeds either kind of input.
 //!
-//! [`cactus_stream_transcribe_process`], [`cactus_stream_transcribe_stop`], [`cactus_describe`]
-//! and [`cactus_set_threads`] are declared so that this module matches the header function for
-//! function. Their documentation repeats what upstream says about them; unlike the other nine,
+//! The vision model describes an image with [`cactus_describe`].
+//!
+//! [`cactus_stream_transcribe_process`], [`cactus_stream_transcribe_stop`] and
+//! [`cactus_set_threads`] are declared so that this module matches the header function for
+//! function. Their documentation repeats what upstream says about them; unlike the other ten,
 //! their contracts have not been measured against the archive yet.
 //!
 //! The declarations are written by hand rather than generated. Thirteen stable entry points do
@@ -282,10 +284,57 @@ unsafe extern "C" {
 
     /// Describes an image with the vision model and writes a JSON document into `out`.
     ///
-    /// `rgb` is packed 8-bit RGB, `width * height * 3` bytes, rows top to bottom. `options` is
-    /// null or a JSON object selecting what to report; `language` and `keywords` are as in
-    /// [`cactus_transcribe`]. A negative return is a failure, with the reason in
-    /// [`cactus_last_error`].
+    /// Returns the number of tokens generated, greater than zero, on success, and a negative
+    /// value on failure with the reason in [`cactus_last_error`]. Upstream documents none of
+    /// what follows; it was measured against the pinned archive by `tests/probe_vision.rs`.
+    ///
+    /// `rgb` is packed 8-bit RGB, `width * height * 3` bytes, rows top to bottom, of any
+    /// positive size; the engine fits it to its own 512-pixel canvas. A non-positive dimension
+    /// fails with `invalid image: rgb must hold width x height x 3 bytes`. The engine cannot
+    /// check the length of `rgb`: it reads what the dimensions say.
+    ///
+    /// By default `out` receives
+    /// `{"scene":{...},"objects":[...],"regions":[...],"text":[...],"relations":[...],"events":[...],"reasoning":"..."}`.
+    /// An object is `{"id","name","bbox":[left,top,right,bottom],"score","mask","position","description":{...}}`
+    /// and a line of text `{"string","bbox","score"}`. Every position is on a scale from 0 to
+    /// 1000 along each axis of the image given. The same image and options give the same bytes.
+    ///
+    /// `options` is null or a JSON object. Unknown keys are ignored, **and so is a string that
+    /// is not JSON**: the image is then described with the defaults and no error is reported.
+    /// Recognised keys, each range-checked with a failure of the form
+    /// `invalid options: <key> must be ...`:
+    ///
+    /// - `sections`: a list of `scene`, `objects`, `regions`, `text`, `relations`, `events`,
+    ///   `reasoning`; only these are written. `fields`: a list of `bbox`, `score`, `mask`,
+    ///   `point`, `position`, `description`, `count`; only these are written on each object.
+    /// - `conf`, `text_conf`, `iou`, `mask_threshold`: numbers from 0 to 1. `mask_tolerance`:
+    ///   0 or more. `keyword_bias`: 0 to 100.
+    /// - `max_objects`, `max_text_lines`, `max_tokens`: whole numbers of at least 1. A token
+    ///   budget that runs out is not a failure; the document is closed where the model stopped.
+    /// - `nms`, `agnostic_nms`: booleans.
+    /// - `mask_format`: `largest` (the default) or `merged`, one outline as a flat
+    ///   `[x,y,x,y,...]` list; `polygons`, a list of such lists; or `bitmap`,
+    ///   `{"size":[height,width],"counts":[...]}` at the size of the image, run-length encoded
+    ///   column by column starting with a run outside the mask.
+    /// - `form`: an object of fields, answered in order instead of describing the image; `out`
+    ///   then receives only `{"form":{<name>:{"value":...,...}}}`. A field is a choice
+    ///   (`{"enum":[...]}`, answered with `value` and a `probabilities` object holding every
+    ///   label and `-` for none of them), a count
+    ///   (`{"type":"integer","minimum":a,"maximum":b}`, with one probability per number), text
+    ///   (`{"type":"string"}`, optionally with `maxLength`, answered with `value` and
+    ///   `probability`), or a box (`{"x-source":"bbox","x-of":"<an earlier choice field>"}`,
+    ///   answered with a `[left,top,right,bottom]` value and `probability`). A `value` of `null`
+    ///   means the model chose none. A form the engine cannot use fails with
+    ///   `invalid form: ...`, naming the field.
+    ///
+    /// `language` is one of the seven codes [`cactus_transcribe`] takes, or null or empty for
+    /// English; it sets the language of names and descriptions, and any other code fails with
+    /// `unsupported language: <code>`. `keywords` is as in [`cactus_transcribe`].
+    ///
+    /// **`out` is never truncated.** A document that does not fit fails with
+    /// `output buffer is too small: <n> bytes needed`, where `n` includes the terminating NUL,
+    /// and leaves an empty string in `out`. An `out_capacity` of `0` fails with
+    /// `invalid output buffer`.
     ///
     /// # Safety
     ///

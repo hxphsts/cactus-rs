@@ -128,7 +128,7 @@ impl Language {
 
 impl Language {
     /// The code as the C string the engine takes.
-    const fn as_c_str(self) -> &'static CStr {
+    pub(crate) const fn as_c_str(self) -> &'static CStr {
         match self {
             Language::En => c"en",
             Language::De => c"de",
@@ -353,33 +353,45 @@ impl TranscribeOptions {
     /// Returns [`Error::InvalidKeyword`] for a keyword with a line break inside it, and
     /// [`Error::InteriorNul`] for one with a NUL byte.
     pub(crate) fn encode(&self) -> Result<EncodedAudio> {
-        let mut joined = String::new();
-        for keyword in &self.keywords {
-            let trimmed = keyword.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if trimmed.contains(['\n', '\r']) {
-                return Err(Error::InvalidKeyword {
-                    keyword: keyword.clone(),
-                });
-            }
-            if !joined.is_empty() {
-                joined.push('\n');
-            }
-            joined.push_str(trimmed);
-        }
-
-        let keywords = if joined.is_empty() {
-            None
-        } else {
-            Some(CString::new(joined).map_err(|_| Error::InteriorNul { field: "keywords" })?)
-        };
-
+        let keywords = join_keywords(&self.keywords)?;
         let language = self.language.map(|language| language.as_c_str().to_owned());
 
         Ok(EncodedAudio::new(language, keywords, self.word_timestamps))
     }
+}
+
+/// Keywords as the one newline-separated C string the engine takes, or `None` for none.
+///
+/// Each keyword is trimmed and empty ones are dropped.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidKeyword`] for a keyword with a line break inside it, and
+/// [`Error::InteriorNul`] for one with a NUL byte.
+pub(crate) fn join_keywords(keywords: &[String]) -> Result<Option<CString>> {
+    let mut joined = String::new();
+    for keyword in keywords {
+        let trimmed = keyword.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.contains(['\n', '\r']) {
+            return Err(Error::InvalidKeyword {
+                keyword: keyword.clone(),
+            });
+        }
+        if !joined.is_empty() {
+            joined.push('\n');
+        }
+        joined.push_str(trimmed);
+    }
+
+    if joined.is_empty() {
+        return Ok(None);
+    }
+    CString::new(joined)
+        .map(Some)
+        .map_err(|_| Error::InteriorNul { field: "keywords" })
 }
 
 #[cfg(test)]

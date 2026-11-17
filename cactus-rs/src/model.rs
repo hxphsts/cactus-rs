@@ -1,10 +1,10 @@
-//! Which of the two models a weight archive, an engine slot or an error is about.
+//! Which of the three models a weight archive, an engine slot or an error is about.
 //!
 //! ## Overview
 //!
-//! The linked engine holds one model per kind: a text model (Needle) and a speech model
-//! (Whistle). Both ship as `.cact` archives with the same magic tag, so the crate names the model
-//! wherever the two could be confused, most visibly in
+//! The linked engine holds one model per kind: a text model (Needle), a speech model (Whistle)
+//! and a vision model (Mirage). All ship as `.cact` archives with the same magic tag, so the
+//! crate names the model wherever they could be confused, most visibly in
 //! [`Error::WrongModel`](crate::Error::WrongModel).
 //!
 //! ## Usage
@@ -39,6 +39,8 @@ pub enum Model {
     Needle,
     /// Whistle, the speech model: transcription, word timestamps and speech embedding.
     Whistle,
+    /// Mirage, the vision model: scene description, detection, text reading and forms.
+    Mirage,
 }
 
 impl Model {
@@ -57,6 +59,7 @@ impl Model {
         match self {
             Model::Needle => "Needle",
             Model::Whistle => "Whistle",
+            Model::Mirage => "Mirage",
         }
     }
 
@@ -69,6 +72,7 @@ impl Model {
     ///
     /// assert_eq!(Model::Needle.archive(), "needle3.cact");
     /// assert_eq!(Model::Whistle.archive(), "whistle.cact");
+    /// assert_eq!(Model::Mirage.archive(), "mirage.cact");
     /// ```
     #[inline]
     #[must_use]
@@ -76,6 +80,7 @@ impl Model {
         match self {
             Model::Needle => "needle3.cact",
             Model::Whistle => "whistle.cact",
+            Model::Mirage => "mirage.cact",
         }
     }
 }
@@ -93,7 +98,7 @@ mod tests {
 
     #[test]
     fn display_is_the_name() {
-        for model in [Model::Needle, Model::Whistle] {
+        for model in [Model::Needle, Model::Whistle, Model::Mirage] {
             assert_eq!(model.to_string(), model.as_str());
         }
     }
@@ -101,5 +106,7 @@ mod tests {
     #[test]
     fn archives_are_distinct() {
         assert_ne!(Model::Needle.archive(), Model::Whistle.archive());
+        assert_ne!(Model::Needle.archive(), Model::Mirage.archive());
+        assert_ne!(Model::Whistle.archive(), Model::Mirage.archive());
     }
 }
