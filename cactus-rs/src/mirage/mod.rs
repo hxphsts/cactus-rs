@@ -63,6 +63,11 @@
 //! - Names and descriptions come in English, German, French, Spanish, Italian, Dutch or Polish
 //!   ([`Language`]). Text in the picture is reported as written.
 //! - The scores and probabilities are the model's own and are not calibrated.
+//! - The result is exact for given pixels and unstable across pixels: a change no eye can see
+//!   (3 levels of 255 in 1% of the values) changed the list of objects for half of 128
+//!   photographs. Expect a live camera to give a different list from frame to frame.
+//! - Dark and night scenes are read poorly: a street at night from a balcony was described as a
+//!   dim room with a table and a shelf.
 //! - A form answers questions about the scene and the things a description names. It does not
 //!   see gestures, faces or actions: it answers such questions from their wording, with high
 //!   probability and no relation to the picture. See [`form`] for the measurements and for the

@@ -249,6 +249,13 @@ impl Image<'static> {
     ///
     /// Behaves as [`Image::open`] does on the file's contents.
     ///
+    /// JPEG decoders do not agree to the last bit, and Mirage notices. Against Pillow, this
+    /// decoder differed by at most 3 levels of 255 in about 1% of the values of 128 photographs,
+    /// and Mirage listed different objects for 65 of them. Neither result is the wrong one. To
+    /// reproduce a result obtained elsewhere, pass the same decoded pixels to
+    /// [`Image::from_rgb`]: from identical pixels this crate returned exactly what upstream's
+    /// Python client did, for all 128.
+    ///
     /// # Examples
     ///
     /// ```no_run
