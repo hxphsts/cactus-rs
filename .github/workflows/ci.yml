@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to a pull request supersedes the run in flight; runs on main always finish.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -17,14 +22,17 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-14]
+        os: [ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y libc++-dev libc++abi-dev
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ". -> target"
       # The weights the engine tests run against, read from the constants the crate itself pins,
@@ -49,7 +57,7 @@ jobs:
             echo "WHISTLE_WEIGHTS_SHA256=$whistle_sha"
           } | tee -a "$GITHUB_ENV"
       # Without weights every engine test skips, so fetch them once and keep them cached.
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: weights
           key: weights-${{ env.NEEDLE_WEIGHTS_SHA256 }}-${{ env.WHISTLE_WEIGHTS_SHA256 }}
@@ -69,27 +77,32 @@ jobs:
     name: clippy (${{ matrix.os }})
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-14]
+        os: [ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The build script checks for libc++ on native Linux builds, clippy included.
       - if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y libc++-dev libc++abi-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
+          toolchain: stable
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ". -> target"
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
+  # Formatting does not depend on the platform; Linux runners are the ones that are always free.
   fmt:
-    runs-on: macos-14
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
+          toolchain: stable
           components: rustfmt
       - run: cargo fmt --all -- --check
 
@@ -98,12 +111,15 @@ jobs:
     name: doc (${{ matrix.os }})
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-14]
+        os: [ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ". -> target"
       - run: cargo doc --no-deps --all-features
@@ -115,14 +131,17 @@ jobs:
     name: msrv (${{ matrix.os }})
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-14]
+        os: [ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y libc++-dev libc++abi-dev
-      - uses: dtolnay/rust-toolchain@1.85
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: "1.85"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ". -> target"
       - run: cargo check --workspace --all-features
@@ -135,6 +154,7 @@ jobs:
     needs: clippy-matrix
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - run: test "${{ needs.clippy-matrix.result }}" = success
 
@@ -142,6 +162,7 @@ jobs:
     needs: doc-matrix
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - run: test "${{ needs.doc-matrix.result }}" = success
 
@@ -149,16 +170,20 @@ jobs:
     needs: msrv-matrix
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - run: test "${{ needs.msrv-matrix.result }}" = success
 
   # No download feature: the build must refuse without an archive, and succeed with a local one.
   offline:
-    runs-on: macos-14
+    runs-on: macos-15
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ". -> target"
       - name: refuses to build without an archive
@@ -188,11 +213,16 @@ jobs:
 
   # Both crates must build from their own tarballs, in dependency order.
   package:
-    runs-on: macos-14
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Packaging builds each crate from its tarball, and the build script checks for libc++.
+      - run: sudo apt-get update && sudo apt-get install -y libc++-dev libc++abi-dev
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ". -> target"
       - run: cargo package --workspace
@@ -205,16 +235,19 @@ jobs:
       matrix:
         package: [cactus-rs, cactus-sys]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       DOCS_RS: "1"
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ". -> target"
           key: ${{ matrix.package }}
-      - uses: obi1kenobi/cargo-semver-checks-action@v2
+      - uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2.9
         with:
           package: ${{ matrix.package }}
           rust-toolchain: manual
@@ -222,9 +255,10 @@ jobs:
   # Licences, RustSec advisories, bans and sources, per deny.toml.
   deny:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@70f81531115945ba6eb6b941ec9d39d063438eb9 # v2.1.2
 
   # Every target the build script maps must still resolve, download and verify its archive.
   # `cargo check` runs build scripts but links nothing, so no target sysroot is needed beyond a
@@ -242,14 +276,16 @@ jobs:
           - target: x86_64-pc-windows-gnullvm
             apt: gcc-mingw-w64-x86-64
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - if: matrix.apt != ''
         run: sudo apt-get update && sudo apt-get install -y ${{ matrix.apt }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ". -> target"
           key: ${{ matrix.target }}
@@ -274,8 +310,9 @@ jobs:
   pins:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-14]
+        os: [ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: .github/scripts/check-pins.sh

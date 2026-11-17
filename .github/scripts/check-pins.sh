@@ -97,6 +97,8 @@ while IFS= read -r match; do
   case "$file" in
     "$PREBUILT" | "$NEEDLE_WEIGHTS" | "$WHISTLE_WEIGHTS" | "$HEADER_README" | CHANGELOG.md | Cargo.lock) continue ;;
   esac
+  # A workflow's `uses: owner/action@<sha>` pins a GitHub Action, not an upstream model repository.
+  case "$file:$line" in .github/workflows/*:*"uses: "*@*) continue ;; esac
 
   # Full commits: any 40-hex token is one of the two pins, and the right one for its repo.
   for token in $(printf '%s\n' "$line" | hex_runs 40); do

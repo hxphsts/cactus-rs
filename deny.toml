@@ -19,12 +19,16 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "CDLA-Permissive-2.0",
+    # foldhash, under serde_json.
+    "Zlib",
 ]
 confidence-threshold = 0.9
 
 [bans]
 multiple-versions = "warn"
-wildcards = "allow"
+# Path dependencies inside the workspace are the one place a wildcard is allowed.
+wildcards = "deny"
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"

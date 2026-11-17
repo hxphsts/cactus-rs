@@ -6,7 +6,6 @@
 *.swp
 *.swo
 .DS_Store
-Cargo.lock
 
 # Engine artifacts: prebuilt archives are fetched into OUT_DIR, weights are ~35 MB.
 *.a

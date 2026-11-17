@@ -23,7 +23,8 @@ include = [
     "include/README.md",
     "shim/libcxx_compat.c",
     "src/**/*.rs",
-    "tests/**/*.rs",
+    "tests/abi.rs",
+    "tests/smoke.rs",
 ]
 
 [package.metadata.docs.rs]
