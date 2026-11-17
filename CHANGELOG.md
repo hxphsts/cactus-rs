@@ -8,6 +8,8 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- `Whistle::transcribe` takes a clip of any length; the engine transcribes one over 30 seconds window by window. `Error::AudioTooLong` now concerns speech embeddings and audio completions, which keep the 30 second limit, and `MAX_SAMPLES` and `MAX_SECONDS` are documented as theirs
+- A transcript larger than the output buffer is no longer an error: the engine states the size it needs and the call is repeated with it
 - **Breaking:** the engine is Cactus engine 4.1.1 (`libcactus.a`, `cactus.h`), pinned at `Cactus-Compute/cactus` commit `d2c5cd70`. Upstream renamed the library and every symbol with release 4.0 and no longer publishes `libneedle.a`; one engine now runs Needle 3, Whistle and Mirage. Needle and Whistle weights are unchanged, and nothing is downloaded again
 - **Breaking, `cactus-sys`:** every function and constant moves from `needle_*` / `NEEDLE_*` to `cactus_*` / `CACTUS_*`, the module from `cactus_sys::needle` to `cactus_sys::engine`, and the `needle` feature to `engine`. Signatures are unchanged
 - `CACTUS_NEEDLE_LIB_DIR` is now `CACTUS_LIB_DIR` and must hold `libcactus.a`. The old name is still read, with a build warning
@@ -22,6 +24,9 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- `Whistle::stream` and `Whistle::stream_with_options`: live transcription. A `TranscriptStream` takes audio in pieces of any size, runs one pass per second, and returns an `Update` with the words settled on and the tail still being heard; `finish` commits the tail (`TranscriptStream`, `Update`, `PASS_SAMPLES`)
+- `voice_stream` example: a spoken command routed to a tool call from the pending tail, before the speaker has finished
+- `cactus-sys/tests/probe_stream.rs` records what the two streaming calls and `cactus_set_threads` do
 - `cactus-rs`: `mirage` module for Cactus Compute's Mirage vision model, loaded into the same engine as Needle and Whistle (`Mirage`, `MirageBuilder`, `Weights`, `Image`, `DescribeOptions`, `Section`, `Field`, `MaskFormat`, `Description`, `Object`, `Region`, `TextLine`, `Relation`, `BBox`, `Mask`, `Bitmap`)
 - `Mirage::describe`: the scene, objects with boxes, scores and masks, the text that can be read, relations and the model's reasoning, in one pass; names and descriptions in seven languages
 - `Mirage::extract` with `Form`: choices, counts, short text and boxes answered from the picture, each with its probability (`Answers`, `Answer`, `AnswerValue`, `ABSTAIN`)

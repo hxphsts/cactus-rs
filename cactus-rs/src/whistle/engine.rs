@@ -16,7 +16,8 @@
 //!   [`Send`] and [`Sync`]; its methods that reach the engine take `&mut self`.
 //! - **No state between clips.** Each transcription stands alone, with the options it is given;
 //!   there is no conversation to reset, so dropping a [`Whistle`] only frees the slot.
-//! - **No streaming.** A clip of up to 30 seconds goes in and its whole transcript comes back.
+//! - **One stream at a time.** [`Whistle::stream`] borrows the [`Whistle`] for as long as the
+//!   live transcription is open, so nothing else can use it meanwhile.
 //!
 //! This module has no `unsafe` in it: all of the crate's lives in its private FFI layer, which
 //! also holds the lock.
@@ -39,17 +40,24 @@
 use std::fmt;
 
 use super::options::TranscribeOptions;
+use super::stream::TranscriptStream;
 use super::transcript::Transcript;
 use super::weights::Weights;
-use super::{FRAME_SAMPLES, frame_count, validate};
+use super::{FRAME_SAMPLES, frame_count, validate, validate_finite};
 use crate::error::{Error, Result};
 use crate::ffi::{self, EncodedAudio, Input, Kind, Slot};
 
-/// Size of the transcription buffer, as upstream's own binding uses.
+/// Size the transcription buffer starts at, as upstream's own binding uses.
 ///
-/// A 30 second clip with word timestamps measured at a few kilobytes, so this never fills in
-/// practice; [`Error::Truncated`] covers the case where it does.
+/// A 30 second clip with word timestamps measured at a few kilobytes. A long recording can
+/// need more; the engine then says how much, and the call is repeated with that.
 const TRANSCRIPT_CAPACITY: usize = 256 * 1024;
+
+/// The largest transcription buffer a call will grow to.
+const MAX_TRANSCRIPT_CAPACITY: usize = 64 * 1024 * 1024;
+
+/// What the engine says, before a byte count, when the transcript does not fit the buffer.
+const TOO_SMALL: &str = "output buffer is too small: ";
 
 /// What the engine said about a failure, or a stand-in when it said nothing.
 fn reason(detail: String) -> String {
@@ -173,7 +181,7 @@ pub struct Whistle {
     /// `options`, checked and encoded once at build time.
     audio: EncodedAudio,
     /// Reused across clips so transcribing does not allocate 256 KiB per call.
-    out: Vec<u8>,
+    pub(super) out: Vec<u8>,
     width: Option<usize>,
 }
 
@@ -245,10 +253,11 @@ impl Whistle {
     /// # Errors
     ///
     /// Returns [`Error::InvalidKeyword`] or [`Error::InteriorNul`] when a keyword cannot be
-    /// passed on, [`Error::AudioTooLong`] for a clip over [`MAX_SAMPLES`](super::MAX_SAMPLES),
-    /// [`Error::NonFiniteSample`] for a NaN or an infinity, [`Error::Transcribe`] with the
-    /// engine's reason when it fails, [`Error::Truncated`] when the transcript filled the output
-    /// buffer, and [`Error::Envelope`] when the response is not the JSON this crate expects.
+    /// passed on, [`Error::NonFiniteSample`] for a NaN or an infinity, [`Error::Transcribe`]
+    /// with the engine's reason when it fails, [`Error::Truncated`] when the transcript would
+    /// not fit in 64 MiB, and [`Error::Envelope`] when the response is not the JSON this crate
+    /// expects. A clip may be any length; [`Error::AudioTooLong`] is returned only for one the
+    /// C API cannot count, over 37 hours.
     pub fn transcribe_with_options(
         &mut self,
         pcm: &[f32],
@@ -256,6 +265,66 @@ impl Whistle {
     ) -> Result<Transcript> {
         let audio = options.encode()?;
         transcribe(&mut self.out, pcm, &audio)
+    }
+
+    /// Opens a live transcription with the options the [`Whistle`] was built with.
+    ///
+    /// Push audio as it arrives; each [`Update`](super::Update) carries the words the model has
+    /// settled on and the tail it is still hearing. The stream borrows the `Whistle` until it
+    /// is finished or dropped. See the [`stream`](super::stream) module.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use cactus_rs::whistle::{Weights, Whistle};
+    ///
+    /// let mut whistle = Whistle::builder(Weights::from_file("whistle.cact")?).build()?;
+    /// let recording = vec![0.0_f32; 16_000 * 5];
+    ///
+    /// let mut stream = whistle.stream()?;
+    /// for second in recording.chunks(16_000) {
+    ///     let update = stream.push(second)?;
+    ///     println!("{} [{}]", update.text(), update.pending());
+    /// }
+    /// println!("{}", stream.finish()?.text());
+    /// # Ok::<(), cactus_rs::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Transcribe`] with the engine's reason when it cannot start a stream.
+    pub fn stream(&mut self) -> Result<TranscriptStream<'_>> {
+        let audio = self.audio.clone();
+        TranscriptStream::open(self, audio)
+    }
+
+    /// Opens a live transcription with the options given here, leaving the builder's untouched.
+    ///
+    /// Word timestamps need not be asked for: a stream always reports its words with times.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use cactus_rs::whistle::{Language, TranscribeOptions, Weights, Whistle};
+    ///
+    /// let mut whistle = Whistle::builder(Weights::from_file("whistle.cact")?).build()?;
+    /// let options = TranscribeOptions::new().with_language(Language::De);
+    /// let mut stream = whistle.stream_with_options(&options)?;
+    /// stream.push(&vec![0.0_f32; 16_000])?;
+    /// # Ok::<(), cactus_rs::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidKeyword`] or [`Error::InteriorNul`] when a keyword cannot be
+    /// passed on, and [`Error::Transcribe`] with the engine's reason when it cannot start a
+    /// stream.
+    pub fn stream_with_options(
+        &mut self,
+        options: &TranscribeOptions,
+    ) -> Result<TranscriptStream<'_>> {
+        let audio = options.encode()?;
+        TranscriptStream::open(self, audio)
     }
 
     /// Embeds one clip: one row of [`Whistle::embedding_width`] floats per 80 ms frame,
@@ -375,36 +444,54 @@ impl Whistle {
 }
 
 /// Runs one transcription into `out`, which is grown to [`TRANSCRIPT_CAPACITY`] and reused.
+///
+/// The engine does not truncate: a transcript that does not fit fails and says how many bytes
+/// it needs. The call is then repeated with that much room, up to [`MAX_TRANSCRIPT_CAPACITY`].
 fn transcribe(out: &mut Vec<u8>, pcm: &[f32], audio: &EncodedAudio) -> Result<Transcript> {
     // Checked before the lock: a bad clip should not wait for, or hold up, anyone else.
-    validate(pcm)?;
+    validate_finite(pcm)?;
 
-    out.resize(TRANSCRIPT_CAPACITY, 0);
-    // A failed call writes nothing; clearing the first byte keeps the previous clip's text from
-    // reading back as this one's.
-    out[0] = 0;
+    if out.len() < TRANSCRIPT_CAPACITY {
+        out.resize(TRANSCRIPT_CAPACITY, 0);
+    }
 
     let mut guard = ffi::lock();
-    // The options go with every call: `cactus_transcribe` never reads `cactus_set_audio`'s.
-    let rc = guard.transcribe(pcm, audio, out)?;
-    if rc < 0 {
-        // A failed transcription writes no envelope; the reason is only in the error slot, and
-        // it must be copied before the lock is released.
-        return Err(Error::Transcribe {
-            detail: reason(guard.last_error()),
-        });
+    loop {
+        // A failed call writes nothing useful; clearing the first byte keeps the previous
+        // clip's text from reading back as this one's.
+        out[0] = 0;
+        // The options go with every call: `cactus_transcribe` never reads `cactus_set_audio`'s.
+        let rc = guard.transcribe(pcm, audio, out)?;
+        if rc >= 0 {
+            break;
+        }
+
+        // The reason is only in the error slot, and it must be copied before the lock is
+        // released.
+        let detail = reason(guard.last_error());
+        match needed(&detail) {
+            Some(bytes) if bytes > out.len() && bytes <= MAX_TRANSCRIPT_CAPACITY => {
+                out.resize(bytes, 0);
+            }
+            Some(bytes) if bytes > MAX_TRANSCRIPT_CAPACITY => {
+                return Err(Error::Truncated {
+                    capacity: MAX_TRANSCRIPT_CAPACITY,
+                });
+            }
+            _ => return Err(Error::Transcribe { detail }),
+        }
     }
     drop(guard);
 
-    let capacity = out.len();
-    let end = out.iter().position(|byte| *byte == 0).unwrap_or(capacity);
-    // The engine truncates to `capacity - 1` bytes and says nothing; a full buffer is the only
-    // signal there is.
-    if end >= capacity - 1 {
-        return Err(Error::Truncated { capacity });
-    }
-
+    let end = out.iter().position(|byte| *byte == 0).unwrap_or(out.len());
     String::from_utf8_lossy(&out[..end]).parse()
+}
+
+/// The buffer size the engine asks for in a "too small" failure, with room for the NUL.
+fn needed(detail: &str) -> Option<usize> {
+    let rest = detail.strip_prefix(TOO_SMALL)?;
+    let digits = rest.split(|c: char| !c.is_ascii_digit()).next()?;
+    digits.parse::<usize>().ok()?.checked_add(1)
 }
 
 /// Prints the configuration, never a transcript.
@@ -452,5 +539,18 @@ mod tests {
     #[test]
     fn the_buffer_is_the_size_upstream_uses() {
         assert_eq!(TRANSCRIPT_CAPACITY, 262_144);
+        assert_eq!(MAX_TRANSCRIPT_CAPACITY, 67_108_864);
+    }
+
+    #[test]
+    fn the_engines_size_request_is_read_from_its_words() {
+        // Measured: a 32-byte buffer for a 169-byte transcript.
+        assert_eq!(
+            needed("output buffer is too small: 170 bytes needed"),
+            Some(171)
+        );
+        assert_eq!(needed("output buffer is too small: "), None);
+        assert_eq!(needed("audio limit is 30 s"), None);
+        assert_eq!(needed(""), None);
     }
 }

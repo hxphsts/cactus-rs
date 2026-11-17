@@ -12,7 +12,7 @@ Needle 3 is a small model that reads a sentence and decides which of your functi
 
 ## What is Whistle?
 
-Whistle is a 16.9 MB speech-to-text model that runs inside the same engine as Needle, so both live in one process. It transcribes clips of up to 30 seconds of 16 kHz mono audio in seven languages (en, de, fr, es, it, nl, pl), with word timestamps, keyword biasing and speech embeddings. Hand a clip to Needle and it transcribes and answers it in one call, so a spoken request becomes tool calls.
+Whistle is a 16.9 MB speech-to-text model that runs inside the same engine as Needle, so both live in one process. It transcribes 16 kHz mono audio, as whole clips of any length or live as it arrives, in seven languages (en, de, fr, es, it, nl, pl), with word timestamps, keyword biasing and speech embeddings. Hand a clip to Needle and it transcribes and answers it in one call, so a spoken request becomes tool calls.
 
 ## What is Mirage?
 
@@ -71,6 +71,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Once a `Whistle` has loaded the speech model, `needle.complete_audio(&pcm)` turns a clip into tool calls, with the transcript in `completion.audio()`.
 
+For audio that is still arriving, open a stream. Each update carries the words Whistle has settled on and the tail it is still hearing, and Needle can answer that tail between pushes:
+
+```rust
+let mut stream = whistle.stream()?;
+for chunk in microphone {                 // 16 kHz mono f32, any chunk size
+    let update = stream.push(&chunk)?;
+    println!("{} [{}]", update.text(), update.pending());
+}
+let last = stream.finish()?;              // commits the tail
+```
+
+On the vendored 2.9 second clip "turn off the kitchen lights", the `voice_stream` example has the right call after 2 seconds, with about 50 ms spent on each transcription pass and routing.
+
 ### Vision
 
 ```rust
@@ -106,6 +119,8 @@ With the `image` feature, `Image::open("photo.jpg")` decodes PNG and JPEG files 
 - Speech-to-text in seven languages, with language detection or forcing, keyword biasing and word timestamps
 - Speech embeddings, 512 floats per 80 ms frame
 - Voice to tool calls: `Needle::complete_audio` transcribes and answers in one engine call
+- Live transcription: `Whistle::stream` reports settled words and the tail still being heard, a second at a time, so a command can be routed before the speaker has finished
+- Recordings of any length: a clip over 30 seconds is transcribed window by window
 - Image description: scene, objects with boxes, scores and masks, text reading, relations, in seven languages
 - Image decisions: choices, counts, short text and boxes from a form, each with its probability
 - One model of each kind per process: a second `build()` of the same kind returns `Error::EngineBusy`; `Needle` and `Whistle` are `Send + Sync` and share one engine lock
@@ -123,6 +138,7 @@ With the `image` feature, `Image::open("photo.jpg")` decodes PNG and JPEG files 
 | [`desktop`](https://github.com/hxphsts/cactus-rs/blob/main/cactus-rs/examples/desktop.rs) | A twelve-tool agent loop that scores itself, and how to write schemas the model follows |
 | [`transcribe`](https://github.com/hxphsts/cactus-rs/blob/main/cactus-rs/examples/transcribe.rs) | A WAV file transcribed, with language, keywords and word timestamps |
 | [`voice_lights`](https://github.com/hxphsts/cactus-rs/blob/main/cactus-rs/examples/voice_lights.rs) | A spoken request turned into light-switch calls by Needle |
+| [`voice_stream`](https://github.com/hxphsts/cactus-rs/blob/main/cactus-rs/examples/voice_stream.rs) | Speech turned into a tool call while it is still being spoken |
 | [`describe`](https://github.com/hxphsts/cactus-rs/blob/main/cactus-rs/examples/describe.rs) | An image described and a decision made about it (`--features image`) |
 
 Run one with `cargo run -p cactus-rs --example lights`.
@@ -139,8 +155,7 @@ Intel macOS and Windows MSVC are not supported, because upstream ships no archiv
 
 ## Roadmap
 
-- Streaming and microphone capture
-- Clips longer than 30 s
+- Microphone capture and end-of-speech detection
 - The grounding layer upstream implements in Python
 - Tool-index persistence
 - Subprocess isolation for several tuned models

@@ -15,10 +15,9 @@
 //!
 //! The vision model describes an image with [`cactus_describe`].
 //!
-//! [`cactus_stream_transcribe_process`], [`cactus_stream_transcribe_stop`] and
-//! [`cactus_set_threads`] are declared so that this module matches the header function for
-//! function. Their documentation repeats what upstream says about them; unlike the other ten,
-//! their contracts have not been measured against the archive yet.
+//! [`cactus_stream_transcribe_process`] and [`cactus_stream_transcribe_stop`] transcribe audio as
+//! it arrives. [`cactus_set_threads`] is declared so that this module matches the header
+//! function for function; no effect of it could be measured.
 //!
 //! The declarations are written by hand rather than generated. Thirteen stable entry points do
 //! not justify a `bindgen` build dependency, and hand-written signatures let every function
@@ -30,7 +29,8 @@
 //! then names the reason. That string is one process-global slot shared by both kinds, owned by
 //! the runtime and overwritten by the next call: copy it before calling anything else.
 //!
-//! Audio is 16 kHz mono `f32` PCM in `[-1, 1]`, at most 30 seconds (480 000 samples) per call.
+//! Audio is 16 kHz mono `f32` PCM in `[-1, 1]`. Transcription takes any length; an embedding or
+//! an audio completion at most 30 seconds (480 000 samples) per call.
 //!
 //! ## Usage
 //!
@@ -206,17 +206,20 @@ unsafe extern "C" {
     /// and phrases to bias the decoder towards. An empty clip (`samples` 0, `pcm` non-null) is
     /// not an error: it gives the silence envelope.
     ///
-    /// `out` follows the rules of [`cactus_complete`]: always NUL-terminated and **silently
-    /// truncated** to `out_capacity - 1` bytes when it does not fit, with the token count still
-    /// returned. Unlike [`cactus_complete`], an `out_capacity` of `0` or a null `out` fails with
-    /// "no output buffer". A failed call writes no envelope; the reason is only in
-    /// [`cactus_last_error`].
+    /// A clip may be any length: up to 30 seconds runs as one pass, and a longer one as
+    /// consecutive 30 second windows, each cut at its last sentence end, with word times counted
+    /// from the start of the clip.
+    ///
+    /// **`out` is never truncated** (it was, before engine 4). A transcript that does not fit
+    /// fails with `output buffer is too small: <n> bytes needed`, where `n` includes the
+    /// terminating NUL, and leaves an empty string in `out`. An `out_capacity` of `0` or a null
+    /// `out` fails with "no output buffer". A failed call writes no envelope; the reason is only
+    /// in [`cactus_last_error`].
     ///
     /// # Safety
     ///
     /// - `pcm` must be valid for reads of `samples` `f32` values for the duration of the call,
-    ///   holding 16 kHz mono audio in `[-1, 1]`. `samples` must not be negative and must not
-    ///   exceed 480 000 (30 seconds).
+    ///   holding 16 kHz mono audio in `[-1, 1]`. `samples` must not be negative.
     /// - `language` and `keywords` must each be either null or a pointer to a NUL-terminated C
     ///   string valid for the duration of the call.
     /// - `out` must be null or valid for writes of `out_capacity` bytes, and `out_capacity`
@@ -235,19 +238,32 @@ unsafe extern "C" {
         out_capacity: c_int,
     ) -> c_int;
 
-    /// Feeds audio to a live transcription and writes what this call committed into `out`.
+    /// Feeds audio to the live transcription and writes what this call committed into `out`.
     ///
-    /// Upstream's description: appends 16 kHz mono float PCM, about one second at a time,
-    /// re-transcribes the buffered audio and commits the words two consecutive passes agree on;
-    /// a feed longer than 30 s is taken in one-second pieces. `language` and `keywords` are as
-    /// in [`cactus_transcribe`]. `out` receives the words this call committed, with times in
-    /// seconds from the start of the stream, and the unconfirmed tail:
-    /// `{"text":"...","words":[{"word":"...","start":0.00,"end":0.00,"probability":0.000}],
-    /// "pending":"...","language":"en","received":0.00,"pass_ms":0.0}`. Returns the number of
-    /// words committed.
+    /// Appends 16 kHz mono float PCM to the stream, re-transcribes the audio that is not yet
+    /// committed, and commits the words two consecutive passes agree on. Returns the number of
+    /// words this call committed, zero or more, and a negative value on failure with the reason
+    /// in [`cactus_last_error`]. Measured against the pinned archive by `tests/probe_stream.rs`.
     ///
-    /// The stream is process-global state: there is one, it starts with the first call and ends
-    /// with [`cactus_stream_transcribe_stop`].
+    /// `out` receives
+    /// `{"text":"...","words":[{"word":"...","start":0.00,"end":0.00,"probability":0.000}],"pending":"...","language":"en","received":0.00,"pass_ms":0.0}`:
+    /// the committed words as text and one by one, with times in seconds from the start of the
+    /// stream; `pending`, the unconfirmed tail, which the next call may change; the language;
+    /// the seconds of audio taken in so far; and the time this pass took.
+    ///
+    /// **Feed about one second at a time.** Fed 100 ms at a time, the same recording committed
+    /// words it had barely heard and came out wrong. A whole clip in one feed commits nothing:
+    /// all of it is pending until [`cactus_stream_transcribe_stop`]. An empty feed is not an
+    /// error.
+    ///
+    /// There is one stream per process. It starts with the first feed and ends with
+    /// [`cactus_stream_transcribe_stop`]. A [`cactus_transcribe`] in between does not disturb
+    /// it. `language` and `keywords` are as in [`cactus_transcribe`], with the same
+    /// `unknown language <code>` failure.
+    ///
+    /// `out` is never truncated: a result that does not fit fails with
+    /// `output buffer is too small: <n> bytes needed`, and an `out_capacity` of `0` with
+    /// "no output buffer".
     ///
     /// # Safety
     ///
@@ -259,7 +275,8 @@ unsafe extern "C" {
     ///   negative or larger than the allocation behind `out`.
     /// - The engine is one process-global, non-thread-safe runtime for every kind of model; the
     ///   caller must serialise every call in this module.
-    /// - A speech model must have been loaded with [`cactus_load`] first.
+    /// - A speech model must have been loaded with [`cactus_load`] first, otherwise this call
+    ///   fails.
     pub fn cactus_stream_transcribe_process(
         pcm: *const c_float,
         samples: c_int,
@@ -271,8 +288,14 @@ unsafe extern "C" {
 
     /// Ends the live transcription and writes its tail into `out`.
     ///
-    /// Upstream's description: the unconfirmed tail becomes the committed words of `out`, and
-    /// the next [`cactus_stream_transcribe_process`] starts a new stream.
+    /// The pending tail is committed as it stands: `out` receives the same document as
+    /// [`cactus_stream_transcribe_process`], with the tail as its words and an empty `pending`,
+    /// and the return value is the number of words. The next feed starts a new stream. With no
+    /// stream open this is not an error: it writes an update with no words and returns `0`.
+    ///
+    /// **Give it room the first time.** A tail that does not fit fails with
+    /// `output buffer is too small: <n> bytes needed`, and the stream is ended all the same:
+    /// those words are lost, and calling again returns the empty update.
     ///
     /// # Safety
     ///
@@ -280,6 +303,8 @@ unsafe extern "C" {
     ///   negative or larger than the allocation behind `out`.
     /// - The engine is one process-global, non-thread-safe runtime for every kind of model; the
     ///   caller must serialise every call in this module.
+    /// - A speech model must have been loaded with [`cactus_load`] first, otherwise this call
+    ///   fails.
     pub fn cactus_stream_transcribe_stop(out: *mut c_char, out_capacity: c_int) -> c_int;
 
     /// Describes an image with the vision model and writes a JSON document into `out`.
@@ -358,9 +383,12 @@ unsafe extern "C" {
         out_capacity: c_int,
     ) -> c_int;
 
-    /// Sets how many threads the engine computes with.
+    /// Sets how many threads the engine computes with, by upstream's name for it.
     ///
-    /// The setting is process-global and applies to every kind of model. It returns nothing.
+    /// The setting is process-global and returns nothing. Any value is accepted, zero and
+    /// negative ones included. On the machine `tests/probe_stream.rs` was written on, values
+    /// from 1 to 8 changed neither the output nor the time of a transcription, a completion or
+    /// a description, so `cactus-rs` does not expose it.
     ///
     /// # Safety
     ///

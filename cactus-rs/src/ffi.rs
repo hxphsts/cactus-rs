@@ -33,7 +33,10 @@ use crate::archive;
 use crate::error::{Error, Result};
 use crate::model::Model;
 
-/// The most samples one call may carry: 30 seconds at 16 kHz, as the header requires.
+/// The most samples one embedding or audio completion may carry: 30 seconds at 16 kHz.
+///
+/// Transcription is not bound by it: since engine 4, a longer clip is transcribed as consecutive
+/// 30 second windows.
 pub(crate) const MAX_SAMPLES: usize = 480_000;
 
 /// Everything this crate knows about the engine, behind the one lock that serialises it.
@@ -126,6 +129,11 @@ fn samples(pcm: &[f32]) -> Result<c_int> {
     }
     // At most 480 000, so this always fits.
     Ok(clamp(pcm.len()))
+}
+
+/// A clip's length as the C API's `int`, for the calls that take audio of any length.
+fn any_samples(pcm: &[f32]) -> Result<c_int> {
+    c_int::try_from(pcm.len()).map_err(|_| Error::AudioTooLong { samples: pcm.len() })
 }
 
 /// A buffer length as the C API's `int`. Clamping only ever under-reports the allocation.
@@ -320,23 +328,23 @@ impl Guard {
         unsafe { cactus_sys::cactus_set_audio(language, keywords, word_timestamps) };
     }
 
-    /// Transcribes one clip, writing the NUL-terminated envelope into `out`.
+    /// Transcribes one clip of any length, writing the NUL-terminated envelope into `out`.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::AudioTooLong`] for a clip over [`MAX_SAMPLES`]; the engine's own
-    /// failures come back as a negative count, as in C.
+    /// Returns [`Error::AudioTooLong`] for a clip whose length does not fit the C API's `int`
+    /// (over 37 hours); the engine's own failures come back as a negative count, as in C.
     pub(crate) fn transcribe(
         &mut self,
         pcm: &[f32],
         audio: &EncodedAudio,
         out: &mut [u8],
     ) -> Result<c_int> {
-        let samples = samples(pcm)?;
+        let samples = any_samples(pcm)?;
         let (language, keywords, word_timestamps) = audio.raw();
         let capacity = clamp(out.len());
         // SAFETY: the guard holds ENGINE, so no other engine call is in flight. `pcm` is
-        // readable for `samples` floats (at most MAX_SAMPLES), the two strings are null or
+        // readable for `samples` floats (exactly its length), the two strings are null or
         // NUL-terminated and owned by `audio`, and `out` is valid for writes of `out.len()`
         // bytes with `capacity` no larger; all are borrowed for the call.
         let rc = unsafe {
@@ -351,6 +359,52 @@ impl Guard {
             )
         };
         Ok(rc)
+    }
+
+    /// Feeds audio to the live transcription, writing what this pass committed into `out`.
+    ///
+    /// The word-timestamp setting of `audio` is not used: a live transcription always reports
+    /// its words.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::AudioTooLong`] for a feed whose length does not fit the C API's `int`;
+    /// the engine's own failures come back as a negative count, as in C.
+    pub(crate) fn stream_process(
+        &mut self,
+        pcm: &[f32],
+        audio: &EncodedAudio,
+        out: &mut [u8],
+    ) -> Result<c_int> {
+        let samples = any_samples(pcm)?;
+        let (language, keywords, _) = audio.raw();
+        let capacity = clamp(out.len());
+        // SAFETY: the guard holds ENGINE, so no other engine call is in flight. `pcm` is
+        // readable for `samples` floats (exactly its length), the two strings are null or
+        // NUL-terminated and owned by `audio`, and `out` is valid for writes of `out.len()`
+        // bytes with `capacity` no larger; all are borrowed for the call.
+        let rc = unsafe {
+            cactus_sys::cactus_stream_transcribe_process(
+                pcm.as_ptr(),
+                samples,
+                language,
+                keywords,
+                out.as_mut_ptr().cast::<c_char>(),
+                capacity,
+            )
+        };
+        Ok(rc)
+    }
+
+    /// Ends the live transcription, writing its tail into `out`. With no stream open it writes
+    /// an empty update.
+    pub(crate) fn stream_stop(&mut self, out: &mut [u8]) -> c_int {
+        let capacity = clamp(out.len());
+        // SAFETY: the guard holds ENGINE, so no other engine call is in flight. `out` is valid
+        // for writes of `out.len()` bytes and `capacity` is no larger.
+        unsafe {
+            cactus_sys::cactus_stream_transcribe_stop(out.as_mut_ptr().cast::<c_char>(), capacity)
+        }
     }
 
     /// How many floats embedding `input` takes, computing nothing.

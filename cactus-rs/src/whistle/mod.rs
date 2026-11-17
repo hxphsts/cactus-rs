@@ -4,7 +4,7 @@
 //!
 //! Whistle is not a second engine. It is a 16.9 MB speech model loaded into the same runtime as
 //! Needle, which holds one model per kind, so a [`Whistle`] and a
-//! [`Needle`](crate::needle::Needle) live side by side in one process. Five types carry the
+//! [`Needle`](crate::needle::Needle) live side by side in one process. Seven types carry the
 //! whole API:
 //!
 //! | Type | What it is |
@@ -14,15 +14,21 @@
 //! | [`Whistle`] | the speech model, held by exactly one value in the process |
 //! | [`Transcript`] | one clip's text and [`Language`], with its [`Word`]s when asked for |
 //! | [`Language`] | the seven languages Whistle transcribes |
+//! | [`TranscriptStream`] | a live transcription: audio in as it arrives, words out as they settle |
+//! | [`Update`] | what one step of a stream committed, and what is still pending |
 //!
 //! [`WhistleBuilder`] sets the options a [`Whistle`] transcribes with by default.
 //!
-//! Audio is 16 kHz mono `f32` PCM in `[-1, 1]` ([`SAMPLE_RATE`]), at most 30 seconds
-//! ([`MAX_SAMPLES`]) per call. Clips are plain `&[f32]` slices, so the output of a WAV reader,
-//! a resampler or a microphone callback goes in as it is. Every clip is checked before it reaches
-//! the engine: a longer one is [`Error::AudioTooLong`], and a NaN or
-//! an infinity is [`Error::NonFiniteSample`]. An empty clip is
-//! not an error: it transcribes to an empty [`Transcript`], as silence does.
+//! Audio is 16 kHz mono `f32` PCM in `[-1, 1]` ([`SAMPLE_RATE`]). Clips are plain `&[f32]`
+//! slices, so the output of a WAV reader, a resampler or a microphone callback goes in as it is.
+//! A clip to transcribe may be any length: up to 30 seconds runs as one pass, and a longer one
+//! as consecutive 30 second windows. A clip to embed is at most 30 seconds ([`MAX_SAMPLES`]),
+//! and a longer one is [`Error::AudioTooLong`]. Every clip is checked before it reaches the
+//! engine: a NaN or an infinity is [`Error::NonFiniteSample`]. An empty clip is not an error:
+//! it transcribes to an empty [`Transcript`], as silence does.
+//!
+//! [`Whistle::stream`] transcribes audio as it arrives, a second at a time, and reports both
+//! the words it has settled on and the tail it is still hearing; see [`stream`].
 //!
 //! [`Whistle::embed`] turns a clip into speech embeddings: one row of
 //! [`Whistle::embedding_width`] floats (512 with the pinned weights) per 80 ms frame,
@@ -64,11 +70,13 @@
 
 pub mod engine;
 pub mod options;
+pub mod stream;
 pub mod transcript;
 pub mod weights;
 
 pub use engine::{Whistle, WhistleBuilder};
 pub use options::{Language, TranscribeOptions};
+pub use stream::{PASS_SAMPLES, TranscriptStream, Update};
 pub use transcript::{Transcript, Word};
 pub use weights::Weights;
 
@@ -85,7 +93,9 @@ use crate::error::{Error, Result};
 /// ```
 pub const SAMPLE_RATE: u32 = 16_000;
 
-/// The longest clip one call accepts, in seconds.
+/// The longest clip one embedding or audio completion accepts, in seconds.
+///
+/// Transcription has no such limit.
 ///
 /// # Examples
 ///
@@ -94,7 +104,10 @@ pub const SAMPLE_RATE: u32 = 16_000;
 /// ```
 pub const MAX_SECONDS: u32 = 30;
 
-/// The longest clip one call accepts, in samples: 30 seconds at 16 kHz.
+/// The longest clip one embedding or audio completion accepts, in samples: 30 seconds at
+/// 16 kHz.
+///
+/// Transcription has no such limit.
 ///
 /// # Examples
 ///
@@ -157,6 +170,15 @@ pub(crate) fn validate(pcm: &[f32]) -> Result<()> {
     if pcm.len() > MAX_SAMPLES {
         return Err(Error::AudioTooLong { samples: pcm.len() });
     }
+    validate_finite(pcm)
+}
+
+/// Checks every sample of audio that may be any length.
+///
+/// # Errors
+///
+/// Returns [`Error::NonFiniteSample`] naming the first NaN or infinity.
+pub(crate) fn validate_finite(pcm: &[f32]) -> Result<()> {
     match pcm.iter().position(|sample| !sample.is_finite()) {
         Some(index) => Err(Error::NonFiniteSample { index }),
         None => Ok(()),
