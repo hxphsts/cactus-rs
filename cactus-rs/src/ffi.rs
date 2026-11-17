@@ -1,14 +1,14 @@
 //! The crate's only door into the C API, and the only module with `unsafe` in it.
 //!
-//! The engine is one process-global, non-thread-safe runtime that holds one model per kind (text
-//! and speech) and one error string for both. Three things make that safe to drive from Rust:
+//! The engine is one process-global, non-thread-safe runtime that holds one model per kind (text,
+//! speech and vision) and one error string for all of them. Three things make that safe to drive from Rust:
 //!
 //! - **One lock.** [`ENGINE`] guards every C call. [`lock`] returns a [`Guard`], and only a
 //!   `Guard` has methods that reach the engine, so two calls never overlap, whichever model or
 //!   thread they come from. [`Guard::last_error`] copies the engine's error string before the
 //!   guard can be released, as the header requires.
-//! - **One slot per kind.** [`Slot::take`] claims the text or the speech model for one value
-//!   (a `Needle` or a `Whistle`), and its `Drop` gives the claim back.
+//! - **One slot per kind.** [`Slot::take`] claims the text, speech or vision model for one value
+//!   (a `Needle`, a `Whistle` or a `Mirage`), and its `Drop` gives the claim back.
 //! - **Types for the pointer rules.** [`Input`] makes "exactly one of `input` and `pcm` is
 //!   non-null" unrepresentable to get wrong, slices carry their own lengths, and every length
 //!   that crosses into an `int` is clamped to [`c_int::MAX`], which only ever under-reports an
@@ -38,26 +38,31 @@ pub(crate) const MAX_SAMPLES: usize = 480_000;
 
 /// Everything this crate knows about the engine, behind the one lock that serialises it.
 static ENGINE: Mutex<State> = Mutex::new(State {
-    taken: [false; 2],
-    loaded: [None; 2],
+    taken: [false; KINDS],
+    loaded: [None; KINDS],
 });
+
+/// How many kinds of model the engine holds: the length of [`State`]'s arrays.
+const KINDS: usize = 3;
 
 /// What [`ENGINE`] protects.
 struct State {
     /// Whether a value holds the slot of each kind, indexed by [`Kind::index`].
-    taken: [bool; 2],
+    taken: [bool; KINDS],
     /// Fingerprint of the archive loaded as each kind, set once and never cleared, because the
     /// engine cannot unload weights.
-    loaded: [Option<u64>; 2],
+    loaded: [Option<u64>; KINDS],
 }
 
-/// The two kinds of model the engine holds at once.
+/// The kinds of model the engine holds at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
     /// The text model, Needle.
     Text,
     /// The speech model, Whistle.
     Speech,
+    /// The vision model, Mirage.
+    Vision,
 }
 
 impl Kind {
@@ -66,6 +71,7 @@ impl Kind {
         match self {
             Kind::Text => cactus_sys::CACTUS_TEXT,
             Kind::Speech => cactus_sys::CACTUS_SPEECH,
+            Kind::Vision => cactus_sys::CACTUS_VISION,
         }
     }
 
@@ -74,6 +80,7 @@ impl Kind {
         match self {
             Kind::Text => 0,
             Kind::Speech => 1,
+            Kind::Vision => 2,
         }
     }
 
@@ -82,6 +89,7 @@ impl Kind {
         match self {
             Kind::Text => Model::Needle,
             Kind::Speech => Model::Whistle,
+            Kind::Vision => Model::Mirage,
         }
     }
 }
@@ -123,6 +131,42 @@ fn samples(pcm: &[f32]) -> Result<c_int> {
 /// A buffer length as the C API's `int`. Clamping only ever under-reports the allocation.
 fn clamp(len: usize) -> c_int {
     c_int::try_from(len).unwrap_or(c_int::MAX)
+}
+
+/// Packed RGB pixels whose length is known to match their dimensions.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Pixels<'a> {
+    rgb: &'a [u8],
+    width: c_int,
+    height: c_int,
+}
+
+impl<'a> Pixels<'a> {
+    /// Pixels from a buffer of exactly `width * height * 3` bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidImage`] when a dimension is zero, when the buffer is not that
+    /// long, or when a dimension or the byte count does not fit the C API's `int`.
+    pub(crate) fn new(rgb: &'a [u8], width: u32, height: u32) -> Result<Self> {
+        let invalid = || Error::InvalidImage {
+            width,
+            height,
+            len: rgb.len(),
+        };
+        // 128 bits: two `u32` dimensions times three do not fit in 64.
+        let bytes = u128::from(width) * u128::from(height) * 3;
+        if width == 0 || height == 0 || bytes != rgb.len() as u128 {
+            return Err(invalid());
+        }
+        // The engine computes the byte count in `int`s; keep the product inside one.
+        c_int::try_from(bytes).map_err(|_| invalid())?;
+        Ok(Pixels {
+            rgb,
+            width: c_int::try_from(width).map_err(|_| invalid())?,
+            height: c_int::try_from(height).map_err(|_| invalid())?,
+        })
+    }
 }
 
 /// The transcription settings, already in the shape the C API takes.
@@ -341,6 +385,39 @@ impl Guard {
         Ok(rc)
     }
 
+    /// Describes an image, writing the NUL-terminated JSON document into `out`.
+    ///
+    /// The engine's failures come back as a negative count, as in C.
+    pub(crate) fn describe(
+        &mut self,
+        image: Pixels<'_>,
+        options: &CStr,
+        language: Option<&CStr>,
+        keywords: Option<&CStr>,
+        out: &mut [u8],
+    ) -> c_int {
+        let language = language.map_or(ptr::null(), CStr::as_ptr);
+        let keywords = keywords.map_or(ptr::null(), CStr::as_ptr);
+        let capacity = clamp(out.len());
+        // SAFETY: the guard holds ENGINE, so no other engine call is in flight. `Pixels::new`
+        // is the only constructor and guarantees that `rgb` is readable for exactly
+        // `width * height * 3` bytes with both dimensions positive `c_int`s. `options` is a
+        // NUL-terminated string and the other two are null or NUL-terminated, all borrowed for
+        // the call. `out` is valid for writes of `out.len()` bytes and `capacity` is no larger.
+        unsafe {
+            cactus_sys::cactus_describe(
+                image.rgb.as_ptr(),
+                image.width,
+                image.height,
+                options.as_ptr(),
+                language,
+                keywords,
+                out.as_mut_ptr().cast::<c_char>(),
+                capacity,
+            )
+        }
+    }
+
     /// Rewinds the text model's conversation to its prefix.
     pub(crate) fn reset(&mut self) {
         // SAFETY: the guard holds ENGINE, so no other engine call, of either kind, is in flight;
@@ -523,6 +600,18 @@ mod tests {
     #[test]
     fn kinds_map_to_distinct_bits_and_models() {
         assert_eq!(Kind::Text.bit() & Kind::Speech.bit(), 0);
+        assert_eq!(
+            Kind::Vision.bit() & (Kind::Text.bit() | Kind::Speech.bit()),
+            0
+        );
+        assert_eq!(Kind::Vision.model(), Model::Mirage);
+        let indices = [
+            Kind::Text.index(),
+            Kind::Speech.index(),
+            Kind::Vision.index(),
+        ];
+        assert_eq!(indices, [0, 1, 2]);
+        assert!(indices.iter().all(|index| *index < KINDS));
         assert_eq!(Kind::Speech.model(), Model::Whistle);
         assert_eq!(Kind::Text.model(), Model::Needle);
     }
@@ -544,6 +633,21 @@ mod tests {
         let error = Input::Audio(&clip).raw().expect_err("too long");
         assert!(matches!(error, Error::AudioTooLong { samples } if samples == MAX_SAMPLES + 1));
         assert!(Input::Audio(&clip[..MAX_SAMPLES]).raw().is_ok());
+    }
+
+    #[test]
+    fn pixels_must_match_their_dimensions() {
+        assert!(Pixels::new(&[0; 12], 2, 2).is_ok());
+        for (len, width, height) in [(11, 2, 2), (13, 2, 2), (0, 0, 0), (0, 0, 4), (3, 1, 0)] {
+            let buffer = vec![0_u8; len];
+            let error = Pixels::new(&buffer, width, height).expect_err("a mismatch");
+            assert!(
+                matches!(error, Error::InvalidImage { width: w, height: h, len: l }
+                    if w == width && h == height && l == len)
+            );
+        }
+        // Dimensions whose byte count overflows an `int` never reach the engine.
+        assert!(Pixels::new(&[], u32::MAX, u32::MAX).is_err());
     }
 
     #[test]

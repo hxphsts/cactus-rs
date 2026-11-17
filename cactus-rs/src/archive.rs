@@ -1,8 +1,8 @@
 //! The checks every `.cact` archive gets before the engine sees it.
 //!
-//! Needle 3 and Whistle archives start with the same little-endian magic tag. [`check_magic`]
-//! rejects files that are no archive at all, or an archive of a generation the linked engine
-//! cannot read. [`kind_of`] then tells the two models apart from the tensor directory, so an
+//! Needle 3, Whistle and Mirage archives start with the same little-endian magic tag.
+//! [`check_magic`] rejects files that are no archive at all, or an archive of a generation the
+//! linked engine cannot read. [`kind_of`] then tells the models apart from the tensor directory, so an
 //! archive of the wrong kind is refused before `cactus_load` could swap out a loaded model.
 
 use crate::error::{Error, Result};
@@ -24,7 +24,13 @@ const MANIFEST_VALUES: u32 = 13;
 /// The manifest value that identifies it: the 16 kHz sample rate, at index 9.
 const MANIFEST_RATE: (usize, f32) = (9, 16_000.0);
 
-/// Little-endian magic tag of a Needle 3 or Whistle archive, the only one the linked engine reads.
+/// Values in Mirage's vision manifest, a one-dimensional FP32 tensor only Mirage carries.
+const VISION_VALUES: u32 = 36;
+
+/// The vision manifest value that identifies it: the 512-pixel canvas, at index 2.
+const VISION_CANVAS: (usize, f32) = (2, 512.0);
+
+/// Little-endian magic tag of a Needle 3, Whistle or Mirage archive, the only one the linked engine reads.
 ///
 /// A Needle 2 archive carries `0x05E12A83` instead and is rejected along with everything else.
 pub(crate) const MAGIC: u32 = 0x05E1_2A84;
@@ -52,7 +58,8 @@ pub(crate) fn check_magic(bytes: &[u8]) -> Result<()> {
 /// Which model an archive holds, read from its tensor directory without the engine.
 ///
 /// Whistle archives carry an audio manifest (an FP32 tensor of 13 values whose tenth is the
-/// 16 000 Hz sample rate) and Needle 3 archives do not. Every read is bounds-checked.
+/// 16 000 Hz sample rate), Mirage archives a vision manifest (36 values whose third is the
+/// 512-pixel canvas), and Needle 3 archives neither. Every read is bounds-checked.
 ///
 /// Returns `None` when the magic tag is wrong or the directory, or the manifest's data, lies
 /// outside `bytes`.
@@ -68,31 +75,35 @@ pub(crate) fn kind_of(bytes: &[u8]) -> Option<Model> {
     let directory = bytes.get(start..end)?;
 
     for record in directory.chunks_exact(RECORD) {
-        if is_manifest(bytes, record)? {
+        if is_manifest(bytes, record, MANIFEST_VALUES, MANIFEST_RATE)? {
             return Some(Model::Whistle);
+        }
+        if is_manifest(bytes, record, VISION_VALUES, VISION_CANVAS)? {
+            return Some(Model::Mirage);
         }
     }
     Some(Model::Needle)
 }
 
-/// Whether one directory record is Whistle's audio manifest, or `None` when a record shaped
-/// like one points outside the archive.
-fn is_manifest(bytes: &[u8], record: &[u8]) -> Option<bool> {
+/// Whether one directory record is a manifest: a one-dimensional FP32 tensor of `values` floats
+/// holding `marker.1` at index `marker.0`. `None` when a record shaped like one points outside
+/// the archive.
+fn is_manifest(bytes: &[u8], record: &[u8], values: u32, marker: (usize, f32)) -> Option<bool> {
     let shaped = record.first() == Some(&FP32)
         && record.get(1) == Some(&1)
-        && read_u32(record, 4)? == MANIFEST_VALUES
-        && read_u64(record, 28)? == u64::from(MANIFEST_VALUES) * 4;
+        && read_u32(record, 4)? == values
+        && read_u64(record, 28)? == u64::from(values) * 4;
     if !shaped {
         return Some(false);
     }
 
     let offset = usize::try_from(read_u64(record, 20)?).ok()?;
-    let (index, rate) = MANIFEST_RATE;
+    let (index, expected) = marker;
     let at = index.checked_mul(4)?.checked_add(offset)?;
     // The whole tensor must lie inside the archive, not only the value read.
-    bytes.get(offset..offset.checked_add(MANIFEST_VALUES as usize * 4)?)?;
+    bytes.get(offset..offset.checked_add(values as usize * 4)?)?;
     let value = f32::from_bits(read_u32(bytes, at)?);
-    Some(value.to_bits() == rate.to_bits())
+    Some(value.to_bits() == expected.to_bits())
 }
 
 /// The little-endian `u32` at `at`, if four bytes are there.
@@ -158,6 +169,25 @@ mod tests {
     }
 
     #[test]
+    fn a_vision_manifest_makes_a_mirage() {
+        let values: Vec<u8> = (0..36)
+            .map(|i| if i == 2 { 512.0 } else { i as f32 })
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let records = [
+            record(FP32, 2, 64, 0, 0),
+            record(FP32, 1, 36, data_at(2), 144),
+        ];
+        assert_eq!(kind_of(&archive(2, &records, &values)), Some(Model::Mirage));
+
+        // The right shape with another canvas is not the manifest.
+        let other: Vec<u8> = (0..36_u8)
+            .flat_map(|i| f32::from(i).to_le_bytes())
+            .collect();
+        assert_eq!(kind_of(&archive(2, &records, &other)), Some(Model::Needle));
+    }
+
+    #[test]
     fn no_manifest_makes_a_needle() {
         let records = [record(FP32, 2, 64, 0, 0)];
         assert_eq!(kind_of(&archive(1, &records, &[])), Some(Model::Needle));
@@ -210,6 +240,7 @@ mod tests {
         for (variable, model) in [
             ("CACTUS_NEEDLE_WEIGHTS", Model::Needle),
             ("CACTUS_WHISTLE_WEIGHTS", Model::Whistle),
+            ("CACTUS_MIRAGE_WEIGHTS", Model::Mirage),
         ] {
             let Some(bytes) = std::env::var_os(variable).and_then(|path| std::fs::read(path).ok())
             else {

@@ -6,6 +6,7 @@
 #                                     cactus.h digest
 #   cactus-rs/src/needle/weights.rs   WEIGHTS_REVISION, WEIGHTS_SHA256 (needle3.cact)
 #   cactus-rs/src/whistle/weights.rs  WEIGHTS_REVISION, WEIGHTS_SHA256 (whistle.cact)
+#   cactus-rs/src/mirage/weights.rs   WEIGHTS_REVISION, WEIGHTS_SHA256 (mirage.cact)
 #   Cargo.toml [workspace.package]    version
 #
 # Run from anywhere inside the repository; works with GNU or BSD tools (Linux and macOS).
@@ -18,6 +19,7 @@ HEADER=cactus-sys/include/cactus.h
 HEADER_README=cactus-sys/include/README.md
 NEEDLE_WEIGHTS=cactus-rs/src/needle/weights.rs
 WHISTLE_WEIGHTS=cactus-rs/src/whistle/weights.rs
+MIRAGE_WEIGHTS=cactus-rs/src/mirage/weights.rs
 
 failures=0
 fail() {
@@ -57,12 +59,16 @@ needle_rev=$(rust_const WEIGHTS_REVISION "$NEEDLE_WEIGHTS")
 needle_sha=$(rust_const WEIGHTS_SHA256 "$NEEDLE_WEIGHTS")
 whistle_rev=$(rust_const WEIGHTS_REVISION "$WHISTLE_WEIGHTS")
 whistle_sha=$(rust_const WEIGHTS_SHA256 "$WHISTLE_WEIGHTS")
+mirage_rev=$(rust_const WEIGHTS_REVISION "$MIRAGE_WEIGHTS")
+mirage_sha=$(rust_const WEIGHTS_SHA256 "$MIRAGE_WEIGHTS")
 header_sha=$(grep -E '^#.*sha256 [0-9a-f]{64}' "$PREBUILT" | head -n1 | sed -E 's/.*sha256 ([0-9a-f]{64}).*/\1/' || true)
 require "commit from $PREBUILT" "$engine_commit"
 require "WEIGHTS_REVISION from $NEEDLE_WEIGHTS" "$needle_rev"
 require "WEIGHTS_SHA256 from $NEEDLE_WEIGHTS" "$needle_sha"
 require "WEIGHTS_REVISION from $WHISTLE_WEIGHTS" "$whistle_rev"
 require "WEIGHTS_SHA256 from $WHISTLE_WEIGHTS" "$whistle_sha"
+require "WEIGHTS_REVISION from $MIRAGE_WEIGHTS" "$mirage_rev"
+require "WEIGHTS_SHA256 from $MIRAGE_WEIGHTS" "$mirage_sha"
 require "the cactus.h digest in the comments of $PREBUILT" "$header_sha"
 # Every libcactus.a digest in the [sha256] table.
 archive_shas=$(sed -n '/^\[sha256\]/,$p' "$PREBUILT" | grep -oE '"[0-9a-f]{64}"' | tr -d '"')
@@ -98,18 +104,20 @@ while IFS= read -r match; do
   where="$file:${rest%%:*}"
   line=${rest#*:}
   case "$file" in
-    "$PREBUILT" | "$NEEDLE_WEIGHTS" | "$WHISTLE_WEIGHTS" | "$HEADER_README" | CHANGELOG.md | Cargo.lock) continue ;;
+    "$PREBUILT" | "$NEEDLE_WEIGHTS" | "$WHISTLE_WEIGHTS" | "$MIRAGE_WEIGHTS" | "$HEADER_README" | CHANGELOG.md | Cargo.lock) continue ;;
   esac
   # A workflow's `uses: owner/action@<sha>` pins a GitHub Action, not an upstream model repository.
   case "$file:$line" in .github/workflows/*:*"uses: "*@*) continue ;; esac
 
-  # Full commits: any 40-hex token is one of the three pins, and the right one for its repo.
+  # Full commits: any 40-hex token is one of the four pins, and the right one for its repo.
   for token in $(printf '%s\n' "$line" | hex_runs 40); do
     case "$line" in
       *needle3*) [ "$token" = "$needle_rev" ] || fail "$where: needle3 revision $token, pinned $needle_rev" ;;
       *whistle*) [ "$token" = "$whistle_rev" ] || fail "$where: whistle revision $token, pinned $whistle_rev" ;;
+      *mirage*) [ "$token" = "$mirage_rev" ] || fail "$where: mirage revision $token, pinned $mirage_rev" ;;
       *) [ "$token" = "$engine_commit" ] || [ "$token" = "$needle_rev" ] || [ "$token" = "$whistle_rev" ] ||
-        fail "$where: commit $token is none of the pins (engine $engine_commit, needle3 $needle_rev, whistle $whistle_rev)" ;;
+        [ "$token" = "$mirage_rev" ] ||
+        fail "$where: commit $token is none of the pins (engine $engine_commit, needle3 $needle_rev, whistle $whistle_rev, mirage $mirage_rev)" ;;
     esac
   done
 
@@ -124,8 +132,8 @@ while IFS= read -r match; do
       grep -oE '[0-9a-f]{7,39}[`"]?$' | tr -d '`"' || true); do
       # A run of digits alone is a number (a timeout, a byte count), not a commit.
       case "$token" in *[a-f]*) ;; *) continue ;; esac
-      is_prefix "$token" "$engine_commit" "$needle_rev" "$whistle_rev" ||
-        fail "$where: \`$token\` names none of the pins (engine $engine_commit, needle3 $needle_rev, whistle $whistle_rev)"
+      is_prefix "$token" "$engine_commit" "$needle_rev" "$whistle_rev" "$mirage_rev" ||
+        fail "$where: \`$token\` names none of the pins (engine $engine_commit, needle3 $needle_rev, whistle $whistle_rev, mirage $mirage_rev)"
     done
     ;;
   esac
@@ -137,6 +145,8 @@ while IFS= read -r match; do
         [ "$token" = "$needle_sha" ] || fail "$where: needle3.cact digest $token, pinned $needle_sha" ;;
       *whistle.cact* | *WHISTLE_WEIGHTS_SHA256*)
         [ "$token" = "$whistle_sha" ] || fail "$where: whistle.cact digest $token, pinned $whistle_sha" ;;
+      *mirage.cact* | *MIRAGE_WEIGHTS_SHA256*)
+        [ "$token" = "$mirage_sha" ] || fail "$where: mirage.cact digest $token, pinned $mirage_sha" ;;
       *libcactus.a* | *ENGINE_SHA256*)
         printf '%s\n' "$archive_shas" | grep -qx "$token" || fail "$where: libcactus.a digest $token is not in $PREBUILT" ;;
       *cactus.h*)
@@ -161,4 +171,4 @@ if [ "$failures" -gt 0 ]; then
   echo "check-pins: $failures mismatch(es); update the copies above to match the source of truth." >&2
   exit 1
 fi
-echo "pins consistent (engine ${engine_commit:0:12}, needle3 ${needle_rev:0:12}, whistle ${whistle_rev:0:12}, version $workspace_version)"
+echo "pins consistent (engine ${engine_commit:0:12}, needle3 ${needle_rev:0:12}, whistle ${whistle_rev:0:12}, mirage ${mirage_rev:0:12}, version $workspace_version)"

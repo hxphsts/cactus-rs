@@ -2,7 +2,7 @@
 
 # cactus-rs
 
-Safe Rust bindings for [Cactus Compute](https://cactuscompute.com)'s on-device engines: [Needle 3](https://github.com/cactus-compute/needle) for tool calling, structured extraction and embeddings, and Whistle for speech-to-text.
+Safe Rust bindings for [Cactus Compute](https://cactuscompute.com)'s on-device engine and the three models it runs: [Needle 3](https://github.com/cactus-compute/cactus) for tool calling, structured extraction and embeddings, Whistle for speech-to-text, and Mirage for vision.
 
 [![Crates.io](https://img.shields.io/crates/v/cactus-rs.svg)](https://crates.io/crates/cactus-rs) [![Documentation](https://docs.rs/cactus-rs/badge.svg)](https://docs.rs/cactus-rs) [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](https://github.com/hxphsts/cactus-rs/blob/main/LICENSE-MIT)
 
@@ -14,11 +14,15 @@ Needle 3 is a small model that reads a sentence and decides which of your functi
 
 Whistle is a 16.9 MB speech-to-text model that runs inside the same engine as Needle, so both live in one process. It transcribes clips of up to 30 seconds of 16 kHz mono audio in seven languages (en, de, fr, es, it, nl, pl), with word timestamps, keyword biasing and speech embeddings. Hand a clip to Needle and it transcribes and answers it in one call, so a spoken request becomes tool calls.
 
+## What is Mirage?
+
+Mirage is a 21.6 MB vision model in the same engine. One pass over an image gives the scene, the objects with boxes, scores and masks, the text that can be read, and how the objects relate. A form asks instead for an answer from a fixed set (which of these labels, how many, where) and returns it with its probability. On an Apple-silicon laptop a full description takes about 130 ms and a one-question form about 45 ms, on the CPU.
+
 ## Quick Start
 
 ```toml
 [dependencies]
-cactus-rs = "0.2"
+cactus-rs = "0.3"
 serde_json = "1.0"
 ```
 
@@ -67,6 +71,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Once a `Whistle` has loaded the speech model, `needle.complete_audio(&pcm)` turns a clip into tool calls, with the transcript in `completion.audio()`.
 
+### Vision
+
+```rust
+use cactus_rs::mirage::{Form, Image, Mirage, Weights};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut mirage = Mirage::builder(Weights::fetch()?).build()?; // 21.6 MB, cached
+    let pixels: Vec<u8> = vec![0; 640 * 480 * 3]; // packed RGB, from your camera or decoder
+    let image = Image::from_rgb(&pixels, 640, 480)?;
+
+    let description = mirage.describe(&image)?;
+    for object in description.objects() {
+        println!("{} at {:?}", object.name(), object.bbox());
+    }
+    for line in description.text() {
+        println!("reads {:?}", line.string());
+    }
+
+    // A decision: one of your labels, with the probability the model gives it.
+    let form = Form::new().choice("sign", ["stop", "yield", "speed limit"]);
+    println!("{:?}", mirage.extract(&image, &form)?.choice("sign"));
+    Ok(())
+}
+```
+
+With the `image` feature, `Image::open("photo.jpg")` decodes PNG and JPEG files and applies their EXIF orientation. Positions come back on a 0 to 1000 scale along each axis; `bbox.to_pixels(width, height)` converts them. Name a form field after the question it asks: the model reads the name.
+
 ## Features
 
 - Tool calls as typed values, with `call.parse::<YourStruct>()`
@@ -75,6 +106,8 @@ Once a `Whistle` has loaded the speech model, `needle.complete_audio(&pcm)` turn
 - Speech-to-text in seven languages, with language detection or forcing, keyword biasing and word timestamps
 - Speech embeddings, 512 floats per 80 ms frame
 - Voice to tool calls: `Needle::complete_audio` transcribes and answers in one engine call
+- Image description: scene, objects with boxes, scores and masks, text reading, relations, in seven languages
+- Image decisions: choices, counts, short text and boxes from a form, each with its probability
 - One model of each kind per process: a second `build()` of the same kind returns `Error::EngineBusy`; `Needle` and `Whistle` are `Send + Sync` and share one engine lock
 - Pinned, checksum-verified engine and weights, with fully offline builds
 - `cactus-sys` for the raw C API underneath
@@ -90,6 +123,7 @@ Once a `Whistle` has loaded the speech model, `needle.complete_audio(&pcm)` turn
 | [`desktop`](https://github.com/hxphsts/cactus-rs/blob/main/cactus-rs/examples/desktop.rs) | A twelve-tool agent loop that scores itself, and how to write schemas the model follows |
 | [`transcribe`](https://github.com/hxphsts/cactus-rs/blob/main/cactus-rs/examples/transcribe.rs) | A WAV file transcribed, with language, keywords and word timestamps |
 | [`voice_lights`](https://github.com/hxphsts/cactus-rs/blob/main/cactus-rs/examples/voice_lights.rs) | A spoken request turned into light-switch calls by Needle |
+| [`describe`](https://github.com/hxphsts/cactus-rs/blob/main/cactus-rs/examples/describe.rs) | An image described and a decision made about it (`--features image`) |
 
 Run one with `cargo run -p cactus-rs --example lights`.
 
