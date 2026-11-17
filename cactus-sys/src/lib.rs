@@ -1,32 +1,37 @@
 //! # cactus-sys
 //!
-//! Raw FFI bindings to [Cactus Compute](https://cactuscompute.com) inference engines.
+//! Raw FFI bindings to the [Cactus Compute](https://cactuscompute.com) inference engine.
 //!
 //! ## What is cactus-sys?
 //!
-//! Cactus Compute ships its engines as prebuilt static libraries with a small C API. This crate
-//! links one of them and declares that API, nothing more: every item is `unsafe`, and no Rust
+//! Cactus Compute ships its engine as a prebuilt static library with a small C API. This crate
+//! links it and declares that API, nothing more: every item is `unsafe`, and no Rust
 //! type stands between the caller and the engine. For a safe, typed API use
 //! [`cactus-rs`](https://docs.rs/cactus-rs) instead.
 //!
 //! ## Key Features
 //!
-//! - **Needle 3 and Whistle**: the nine functions of `needle.h`, behind the `needle` feature
-//!   (default)
-//! - **Pinned Binaries**: the archive is fetched from one Hugging Face commit and checked
+//! - **One Engine, Three Models**: the thirteen functions of `cactus.h`, which run Needle 3
+//!   (text), Whistle (speech) and Mirage (vision), behind the `engine` feature (default)
+//! - **Pinned Binaries**: the archive is fetched from one release at one Hugging Face commit and checked
 //!   against a SHA-256 recorded in this crate
-//! - **Offline Builds**: point `CACTUS_NEEDLE_LIB_DIR` at a local archive and nothing is
+//! - **Offline Builds**: point `CACTUS_LIB_DIR` at a local archive and nothing is
 //!   downloaded; `HF_ENDPOINT` selects a Hugging Face mirror and `HF_HUB_OFFLINE=1` refuses to
 //!   download at all
 //! - **No Dependencies**: `#![no_std]`, and no runtime crates
 //!
-//! ## Engines
+//! ## Models
 //!
-//! | Engine | Header | Feature | Status |
-//! | --- | --- | --- | --- |
-//! | Needle 3 | `include/needle.h` | `needle` | supported |
-//! | Whistle | `include/needle.h` | `needle` | supported |
-//! | Cactus | `cactus_engine.h` | none | not planned: ARM64-only, no prebuilt archive, source-available licence |
+//! | Model | Kind bit | Entry points |
+//! | --- | --- | --- |
+//! | Needle 3 | [`CACTUS_TEXT`] | [`cactus_init`], [`cactus_complete`], [`cactus_reset`], [`cactus_embed`] |
+//! | Whistle | [`CACTUS_SPEECH`] | [`cactus_transcribe`], [`cactus_stream_transcribe_process`], [`cactus_stream_transcribe_stop`], [`cactus_set_audio`], [`cactus_embed`] |
+//! | Mirage | [`CACTUS_VISION`] | [`cactus_describe`] |
+//!
+//! The engine was published as `libneedle.a` with a `needle_*` API until release 4.0, which
+//! renamed every symbol to `cactus_*`. Upstream's older general SDK (`cactus_engine.h`) is a
+//! different library and is not bound here: ARM64-only, no prebuilt archive, source-available
+//! licence.
 //!
 //! ## Linking
 //!
@@ -35,10 +40,10 @@
 //! | Source | Behaviour |
 //! | --- | --- |
 //! | `DOCS_RS` | Links nothing, so documentation builds need no archive. |
-//! | `CACTUS_NEEDLE_LIB_DIR` | Links `libneedle.a` from that directory. |
+//! | `CACTUS_LIB_DIR` | Links `libcactus.a` from that directory. |
 //! | feature `download-binaries` (default) | Downloads the archive for the target from the pinned commit and verifies its SHA-256. |
 //!
-//! With `download-binaries` off and `CACTUS_NEEDLE_LIB_DIR` unset the build fails and says so.
+//! With `download-binaries` off and `CACTUS_LIB_DIR` unset the build fails and says so.
 //!
 //! Every upstream archive is built against LLVM libc++, never libstdc++. The build script links
 //! `c++` on Apple and Windows (gnullvm) targets, `c++` and `c++abi` on Linux, and `c++_shared`
@@ -58,7 +63,7 @@
 //!
 //! ## What the archive contains
 //!
-//! The engine is CPU only. Its symbol table names kernels for AVX2, AVX-512, AVX-512 VNNI and AMX
+//! The engine is CPU only. Its symbol table names kernels for AVX2, AVX-512 (VNNI, BF16) and AMX
 //! on x86 and for NEON on ARM, chosen at startup from what the CPU offers, and it has no CUDA,
 //! Vulkan, OpenCL or Metal symbols. `nm` also shows no socket, resolver or HTTP symbols, so the
 //! telemetry note in upstream's documentation covers their command-line runner and Python
@@ -66,9 +71,9 @@
 //!
 //! ## Safety Guarantees
 //!
-//! None. The engine holds one process-global model per kind, text (Needle 3) and speech (Whistle),
-//! behind one non-thread-safe runtime with no handles and one global error string. Every call, of
-//! either kind, must be serialised by the caller, and nothing here enforces that. Each function
+//! None. The engine holds one process-global model per kind, text (Needle 3), speech (Whistle) and
+//! vision (Mirage), behind one non-thread-safe runtime with no handles and one global error string.
+//! Every call, of any kind, must be serialised by the caller, and nothing here enforces that. Each function
 //! documents the contract that was measured against the shipped archive under `# Safety`.
 //!
 //! ## Affiliation
@@ -80,19 +85,20 @@
 //!
 //! ```
 //! // The pin the `download-binaries` feature fetches from.
-//! assert_eq!(cactus_sys::NEEDLE_ENGINE_COMMIT.len(), 40);
+//! assert_eq!(cactus_sys::CACTUS_ENGINE_COMMIT.len(), 40);
 //! ```
 
 #![no_std]
 #![warn(missing_docs)]
 #![deny(clippy::undocumented_unsafe_blocks)]
 
-#[cfg(feature = "needle")]
-pub mod needle;
+#[cfg(feature = "engine")]
+pub mod engine;
 
-#[cfg(feature = "needle")]
-pub use needle::{
-    NEEDLE_ENGINE_COMMIT, NEEDLE_SPEECH, NEEDLE_TEXT, needle_complete, needle_embed, needle_init,
-    needle_last_error, needle_load, needle_models, needle_reset, needle_set_audio,
-    needle_transcribe,
+#[cfg(feature = "engine")]
+pub use engine::{
+    CACTUS_ENGINE_COMMIT, CACTUS_ENGINE_VERSION, CACTUS_SPEECH, CACTUS_TEXT, CACTUS_VISION,
+    cactus_complete, cactus_describe, cactus_embed, cactus_init, cactus_last_error, cactus_load,
+    cactus_models, cactus_reset, cactus_set_audio, cactus_set_threads,
+    cactus_stream_transcribe_process, cactus_stream_transcribe_stop, cactus_transcribe,
 };

@@ -3,7 +3,7 @@
 //! Needle 3 and Whistle archives start with the same little-endian magic tag. [`check_magic`]
 //! rejects files that are no archive at all, or an archive of a generation the linked engine
 //! cannot read. [`kind_of`] then tells the two models apart from the tensor directory, so an
-//! archive of the wrong kind is refused before `needle_load` could swap out a loaded model.
+//! archive of the wrong kind is refused before `cactus_load` could swap out a loaded model.
 
 use crate::error::{Error, Result};
 use crate::model::Model;

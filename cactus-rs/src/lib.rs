@@ -1,14 +1,14 @@
 //! # cactus-rs
 //!
-//! Safe Rust bindings for [Cactus Compute](https://cactuscompute.com)'s Needle engine and the two
-//! models it runs: Needle 3 for tool calling, structured extraction and text embedding, and
+//! Safe Rust bindings for [Cactus Compute](https://cactuscompute.com)'s on-device engine and two of
+//! the models it runs: Needle 3 for tool calling, structured extraction and text embedding, and
 //! Whistle for speech-to-text. On the CPU, with no server.
 //!
 //! ## What is Needle?
 //!
 //! Needle 3 is a 29M to 121M parameter model that does one thing: read a sentence and decide which
 //! of your functions to call with which arguments. It ships as a closed-source prebuilt static
-//! library of nine C functions, with its weights in a separate 35 MB `needle3.cact` archive.
+//! library with a small C API, with its weights in a separate 35 MB `needle3.cact` archive.
 //! [`cactus-sys`](https://docs.rs/cactus-sys) links that library; this crate is the safe API over
 //! it.
 //!
@@ -48,7 +48,7 @@
 //! - **One Model per Kind, Enforced**: each process-global model is a Rust value, so a second
 //!   [`Needle`](needle::Needle) or [`Whistle`](whistle::Whistle) is an [`Error::EngineBusy`],
 //!   not a data race
-//! - **Offline**: with `--no-default-features` and `CACTUS_NEEDLE_LIB_DIR` pointing at a local
+//! - **Offline**: with `--no-default-features` and `CACTUS_LIB_DIR` pointing at a local
 //!   archive, nothing is downloaded at build time or at run time. `HF_ENDPOINT` points the
 //!   weight downloads at a Hugging Face mirror, and `HF_HUB_OFFLINE=1` makes them fail instead
 //!   of touching the network

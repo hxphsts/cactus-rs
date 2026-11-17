@@ -34,8 +34,8 @@ download = ["dep:ureq", "dep:sha2"]
 schemars = ["dep:schemars"]
 
 [dependencies]
-cactus-sys = { path = "../cactus-sys", version = "0.2.1", default-features = false, features = [
-    "needle",
+cactus-sys = { path = "../cactus-sys", version = "0.3.0", default-features = false, features = [
+    "engine",
 ] }
 serde = { version = "1.0", features = ["derive"] }
 # `preserve_order` is load-bearing: the model was trained on tool schemas in their declared key

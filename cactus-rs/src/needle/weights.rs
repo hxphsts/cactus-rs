@@ -4,7 +4,7 @@
 //!
 //! The engine ships as code only. Its weights are a separate 35 MB `needle3.cact` archive, and
 //! [`Weights`] is that archive in memory with its magic tag checked. The check is cheap and it is
-//! worth doing early: `needle_load` answers a bad archive with the same `-1` it gives a truncated
+//! worth doing early: `cactus_load` answers a bad archive with the same `-1` it gives a truncated
 //! download, so without it a Needle 2 file and a half-finished transfer look alike.
 //!
 //! A `Weights` value is the bytes and nothing else. The engine copies what it needs during the
@@ -180,7 +180,7 @@ impl Weights {
         self.generation
     }
 
-    /// The archive bytes, for the one `needle_load` call in this crate.
+    /// The archive bytes, for the one `cactus_load` call in this crate.
     pub(crate) fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
@@ -196,7 +196,18 @@ impl fmt::Debug for Weights {
     }
 }
 
-/// SHA-256 of `needle3.cact` at the pinned engine commit, lowercase hex.
+/// Commit of the `Cactus-Compute/needle3` Hugging Face repository the weights are pinned to.
+///
+/// # Examples
+///
+/// ```rust
+/// assert_eq!(cactus_rs::needle::weights::WEIGHTS_REVISION.len(), 40);
+/// ```
+#[cfg(feature = "download")]
+#[cfg_attr(docsrs, doc(cfg(feature = "download")))]
+pub const WEIGHTS_REVISION: &str = "c7c415a3d1b3d929014bc6e866d51ebb971f7089";
+
+/// SHA-256 of `needle3.cact` at [`WEIGHTS_REVISION`], lowercase hex.
 ///
 /// # Examples
 ///
@@ -207,11 +218,11 @@ impl fmt::Debug for Weights {
 #[cfg_attr(docsrs, doc(cfg(feature = "download")))]
 pub const WEIGHTS_SHA256: &str = "c9d915eca282ed42d1a09b143b592adb4cc6744ffe2d294adf5cfc5548170c38";
 
-/// Where `needle3.cact` is downloaded from and cached: the engine's own Hugging Face commit.
+/// Where `needle3.cact` is downloaded from and cached.
 #[cfg(feature = "download")]
 pub(crate) const PIN: crate::download::Pin = crate::download::Pin {
     repo: "Cactus-Compute/needle3",
-    revision: cactus_sys::NEEDLE_ENGINE_COMMIT,
+    revision: WEIGHTS_REVISION,
     file: "needle3.cact",
     sha256: WEIGHTS_SHA256,
     env: "CACTUS_NEEDLE_WEIGHTS",
@@ -229,7 +240,7 @@ impl Weights {
     /// 2. The cache file, under `$XDG_CACHE_HOME/cactus-rs/needle3/<commit>/needle3.cact`
     ///    (`$HOME/.cache/...` when `XDG_CACHE_HOME` is unset, `%LOCALAPPDATA%\...` on
     ///    Windows, the system temporary directory when none of those is set), where
-    ///    `<commit>` is the first twelve characters of the pinned engine commit. It is used
+    ///    `<commit>` is the first twelve characters of [`WEIGHTS_REVISION`]. It is used
     ///    only if it still matches [`WEIGHTS_SHA256`].
     /// 3. A download from the pinned Hugging Face commit, verified against
     ///    [`WEIGHTS_SHA256`] and installed under a temporary name before being renamed into

@@ -343,9 +343,9 @@ impl NeedleBuilder {
             // Copied while the guard is held: the string is valid only until the next call.
             let reason = guard.last_error();
             let detail = if reason.is_empty() {
-                format!("needle_init returned {rc} and gave no reason")
+                format!("cactus_init returned {rc} and gave no reason")
             } else {
-                format!("{reason} (needle_init returned {rc})")
+                format!("{reason} (cactus_init returned {rc})")
             };
             return Err(Error::InitFailed { detail });
         }
@@ -597,11 +597,11 @@ impl Needle {
         let mut guard = ffi::lock();
         if let Some(audio) = audio {
             // Without the speech model the engine fails with a message about passing a file to
-            // `needle_load`; the typed error says what to do from Rust instead.
+            // `cactus_load`; the typed error says what to do from Rust instead.
             if guard.models() & Kind::Speech.bit() == 0 {
                 return Err(Error::SpeechModelNotLoaded);
             }
-            // The setting is process-global and survives `needle_reset` and `needle_init`, so
+            // The setting is process-global and survives `cactus_reset` and `cactus_init`, so
             // it is set on every audio turn rather than trusted from the last one.
             guard.set_audio(audio);
         }
@@ -672,7 +672,7 @@ impl Needle {
             let detail = if rc > 0 {
                 format!("engine wrote {rc} floats, expected {dimension}")
             } else {
-                ffi::or_unexplained(guard.last_error(), "needle_embed", rc)
+                ffi::or_unexplained(guard.last_error(), "cactus_embed", rc)
             };
             return Err(Error::EmbedFailed { detail });
         }
@@ -711,7 +711,7 @@ impl Needle {
             Ok(dimension) if dimension > 0 => dimension,
             _ => {
                 return Err(Error::EmbedFailed {
-                    detail: ffi::or_unexplained(guard.last_error(), "needle_embed", rc),
+                    detail: ffi::or_unexplained(guard.last_error(), "cactus_embed", rc),
                 });
             }
         };
@@ -874,8 +874,8 @@ mod tests {
 
     #[test]
     fn a_failure_detail_prefers_the_engines_own_words() {
-        let detail = failure_detail(r#"{"type":"error","error":"needle_init not called"}"#);
-        assert_eq!(detail, "needle_init not called");
+        let detail = failure_detail(r#"{"type":"error","error":"cactus_init not called"}"#);
+        assert_eq!(detail, "cactus_init not called");
     }
 
     #[test]

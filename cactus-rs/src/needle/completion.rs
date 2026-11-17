@@ -2,7 +2,7 @@
 //!
 //! ## Overview
 //!
-//! Every [`needle_complete`](cactus_sys::needle_complete) call writes one JSON object into the
+//! Every [`cactus_complete`](cactus_sys::cactus_complete) call writes one JSON object into the
 //! caller's buffer, and [`Completion`] is that object parsed. A turn that reaches for tools looks
 //! like this:
 //!
@@ -794,14 +794,14 @@ mod tests {
     fn a_failed_audio_turn_is_still_an_error() {
         // The engine merges what it heard even into an error envelope.
         let envelope = concat!(
-            r#"{"type":"error","error":"needle_init not called","#,
+            r#"{"type":"error","error":"cactus_init not called","#,
             r#""audio_text":"Turn off the kitchen lights.","audio_language":"en"}"#,
         );
         let error = envelope
             .parse::<Completion>()
             .expect_err("an error envelope");
         assert!(
-            matches!(error, Error::Complete { ref detail } if detail == "needle_init not called")
+            matches!(error, Error::Complete { ref detail } if detail == "cactus_init not called")
         );
     }
 
@@ -839,7 +839,7 @@ mod tests {
 
     #[test]
     fn an_error_envelope_becomes_a_complete_error() {
-        let envelope = r#"{"type":"error","error":"needle_init not called"}"#;
+        let envelope = r#"{"type":"error","error":"cactus_init not called"}"#;
         let error = envelope
             .parse::<Completion>()
             .expect_err("an error envelope is not a completion");
@@ -847,7 +847,7 @@ mod tests {
         let Error::Complete { detail } = error else {
             panic!("expected Error::Complete");
         };
-        assert_eq!(detail, "needle_init not called");
+        assert_eq!(detail, "cactus_init not called");
     }
 
     #[test]

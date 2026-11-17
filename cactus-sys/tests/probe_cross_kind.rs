@@ -6,14 +6,14 @@
 //! It also prints both archives' headers and first directory records, the evidence for telling
 //! the two kinds apart without the engine.
 
-#![cfg(feature = "needle")]
+#![cfg(feature = "engine")]
 
 use core::ffi::{CStr, c_char, c_int, c_ulonglong};
 use std::ffi::CString;
 
 use cactus_sys::{
-    NEEDLE_SPEECH, NEEDLE_TEXT, needle_complete, needle_embed, needle_init, needle_last_error,
-    needle_load, needle_models, needle_transcribe,
+    CACTUS_SPEECH, CACTUS_TEXT, cactus_complete, cactus_embed, cactus_init, cactus_last_error,
+    cactus_load, cactus_models, cactus_transcribe,
 };
 
 // ---- Shared probe helpers, duplicated in each probe file on purpose: every probe is its own
@@ -31,14 +31,14 @@ fn archive(var: &str) -> Option<Vec<u8>> {
     Some(std::fs::read(&path).unwrap_or_else(|error| panic!("{var}: {error}")))
 }
 
-/// Copies [`needle_last_error`] out before the next call can invalidate it.
+/// Copies [`cactus_last_error`] out before the next call can invalidate it.
 ///
 /// # Safety
 ///
 /// Every engine call must be serialised, as each probe's single test function does.
 unsafe fn last_error() -> String {
     // SAFETY: serialised by the caller; the pointer is checked and copied before returning.
-    let ptr = unsafe { needle_last_error() };
+    let ptr = unsafe { cactus_last_error() };
     if ptr.is_null() {
         return String::new();
     }
@@ -48,14 +48,14 @@ unsafe fn last_error() -> String {
         .into_owned()
 }
 
-/// `needle_load` of `bytes`: the return code, the error text when it failed, and the models after.
+/// `cactus_load` of `bytes`: the return code, the error text when it failed, and the models after.
 ///
 /// # Safety
 ///
 /// Every engine call must be serialised.
 unsafe fn load(label: &str, bytes: &[u8]) -> (c_int, String, c_int) {
     // SAFETY: `bytes` is valid for its length for the call; serialised by the caller.
-    let rc = unsafe { needle_load(bytes.as_ptr(), bytes.len() as c_ulonglong) };
+    let rc = unsafe { cactus_load(bytes.as_ptr(), bytes.len() as c_ulonglong) };
     // SAFETY: serialised by the caller.
     let error = if rc < 0 {
         unsafe { last_error() }
@@ -63,8 +63,8 @@ unsafe fn load(label: &str, bytes: &[u8]) -> (c_int, String, c_int) {
         String::new()
     };
     // SAFETY: serialised by the caller.
-    let models = unsafe { needle_models() };
-    println!("{label}: needle_load rc {rc}, last_error {error:?}, needle_models {models}");
+    let models = unsafe { cactus_models() };
+    println!("{label}: cactus_load rc {rc}, last_error {error:?}, cactus_models {models}");
     (rc, error, models)
 }
 
@@ -128,7 +128,7 @@ fn describe(label: &str, bytes: &[u8]) -> Vec<Tensor> {
 /// One tool, in the flat wire form the engine reads.
 const TOOLS: &CStr = c"[{\"name\":\"control_lights\",\"description\":\"Turn lights on or off in a room.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"room\":{\"type\":\"string\"},\"action\":{\"type\":\"string\",\"enum\":[\"on\",\"off\"]}},\"required\":[\"room\",\"action\"]}}]";
 
-/// `needle_init` with one tool: the prefix token count, or the error text.
+/// `cactus_init` with one tool: the prefix token count, or the error text.
 ///
 /// # Safety
 ///
@@ -136,7 +136,7 @@ const TOOLS: &CStr = c"[{\"name\":\"control_lights\",\"description\":\"Turn ligh
 unsafe fn init() -> (c_int, String) {
     // SAFETY: both strings are NUL-terminated statics; serialised by the caller.
     let rc = unsafe {
-        needle_init(
+        cactus_init(
             c"You control a smart home.".as_ptr(),
             TOOLS.as_ptr(),
             core::ptr::null(),
@@ -148,11 +148,11 @@ unsafe fn init() -> (c_int, String) {
     } else {
         String::new()
     };
-    println!("needle_init: rc {rc}, last_error {error:?}");
+    println!("cactus_init: rc {rc}, last_error {error:?}");
     (rc, error)
 }
 
-/// `needle_complete` on `input`: the return code and the envelope.
+/// `cactus_complete` on `input`: the return code and the envelope.
 ///
 /// # Safety
 ///
@@ -162,7 +162,7 @@ unsafe fn complete(label: &str, input: &str) -> (c_int, String) {
     let mut out = vec![0u8; OUT];
     // SAFETY: `input` is NUL-terminated, `out` holds `OUT` bytes; serialised by the caller.
     let rc = unsafe {
-        needle_complete(
+        cactus_complete(
             input.as_ptr(),
             core::ptr::null(),
             0,
@@ -181,11 +181,11 @@ unsafe fn complete(label: &str, input: &str) -> (c_int, String) {
         .unwrap()
         .to_string_lossy()
         .into_owned();
-    println!("{label}: needle_complete rc {rc}, last_error {error:?}, envelope {envelope}");
+    println!("{label}: cactus_complete rc {rc}, last_error {error:?}, envelope {envelope}");
     (rc, envelope)
 }
 
-/// `needle_embed` of `input`: the whole vector.
+/// `cactus_embed` of `input`: the whole vector.
 ///
 /// # Safety
 ///
@@ -194,7 +194,7 @@ unsafe fn embed(label: &str, input: &str) -> Vec<f32> {
     let input = CString::new(input).unwrap();
     // SAFETY: a null output only asks for the count; serialised by the caller.
     let count = unsafe {
-        needle_embed(
+        cactus_embed(
             input.as_ptr(),
             core::ptr::null(),
             0,
@@ -208,7 +208,7 @@ unsafe fn embed(label: &str, input: &str) -> Vec<f32> {
     let mut out = vec![0f32; count as usize];
     // SAFETY: `out` holds `count` floats; serialised by the caller.
     let rc = unsafe {
-        needle_embed(
+        cactus_embed(
             input.as_ptr(),
             core::ptr::null(),
             0,
@@ -218,7 +218,7 @@ unsafe fn embed(label: &str, input: &str) -> Vec<f32> {
     };
     assert_eq!(rc, count, "embed: {}", unsafe { last_error() });
     println!(
-        "{label}: needle_embed({input:?}) dim {count}, first 8 {:?}",
+        "{label}: cactus_embed({input:?}) dim {count}, first 8 {:?}",
         &out[..8]
     );
     out
@@ -253,7 +253,7 @@ fn lights_en() -> Vec<f32> {
         .collect()
 }
 
-/// `needle_embed` of `pcm`: the whole flattened frame matrix.
+/// `cactus_embed` of `pcm`: the whole flattened frame matrix.
 ///
 /// # Safety
 ///
@@ -262,7 +262,7 @@ unsafe fn embed_pcm(label: &str, pcm: &[f32]) -> Vec<f32> {
     let samples = pcm.len() as c_int;
     // SAFETY: a null output only asks for the count; serialised by the caller.
     let count = unsafe {
-        needle_embed(
+        cactus_embed(
             core::ptr::null(),
             pcm.as_ptr(),
             samples,
@@ -276,7 +276,7 @@ unsafe fn embed_pcm(label: &str, pcm: &[f32]) -> Vec<f32> {
     let mut out = vec![0f32; count as usize];
     // SAFETY: `pcm` holds `samples` floats, `out` holds `count`; serialised by the caller.
     let rc = unsafe {
-        needle_embed(
+        cactus_embed(
             core::ptr::null(),
             pcm.as_ptr(),
             samples,
@@ -286,13 +286,13 @@ unsafe fn embed_pcm(label: &str, pcm: &[f32]) -> Vec<f32> {
     };
     assert_eq!(rc, count, "embed: {}", unsafe { last_error() });
     println!(
-        "{label}: needle_embed(pcm) {count} floats, first 8 {:?}",
+        "{label}: cactus_embed(pcm) {count} floats, first 8 {:?}",
         &out[..8]
     );
     out
 }
 
-/// `needle_transcribe` of `pcm` in English: the return code and the envelope.
+/// `cactus_transcribe` of `pcm` in English: the return code and the envelope.
 ///
 /// # Safety
 ///
@@ -301,7 +301,7 @@ unsafe fn transcribe(label: &str, pcm: &[f32]) -> (c_int, String) {
     let mut out = vec![0u8; OUT];
     // SAFETY: `pcm` holds its length in floats, `out` holds `OUT` bytes; serialised by the caller.
     let rc = unsafe {
-        needle_transcribe(
+        cactus_transcribe(
             pcm.as_ptr(),
             pcm.len() as c_int,
             c"en".as_ptr(),
@@ -321,7 +321,7 @@ unsafe fn transcribe(label: &str, pcm: &[f32]) -> (c_int, String) {
         .unwrap()
         .to_string_lossy()
         .into_owned();
-    println!("{label}: needle_transcribe rc {rc}, last_error {error:?}, envelope {envelope}");
+    println!("{label}: cactus_transcribe rc {rc}, last_error {error:?}, envelope {envelope}");
     (rc, envelope)
 }
 
@@ -365,7 +365,7 @@ fn a_speech_load_keeps_the_text_model_and_its_init() {
 
     // SAFETY: every call in this test runs on one thread, in order.
     unsafe {
-        assert_eq!(load("text", &text), (0, String::new(), NEEDLE_TEXT));
+        assert_eq!(load("text", &text), (0, String::new(), CACTUS_TEXT));
         assert!(init().0 > 0);
         assert!(complete("text only", "turn on the kitchen lights").0 >= 0);
         let words = embed("text only", "kitchen");
@@ -383,7 +383,7 @@ fn a_speech_load_keeps_the_text_model_and_its_init() {
 
         // Measured at c7c415a3: a speech archive leaves the text model, and its init, alone.
         assert_eq!(rc, 0, "speech load: {error}");
-        assert_eq!(models, NEEDLE_TEXT | NEEDLE_SPEECH);
+        assert_eq!(models, CACTUS_TEXT | CACTUS_SPEECH);
         assert!(survived);
         assert_eq!(words, words_after);
 
@@ -400,9 +400,9 @@ fn a_speech_load_keeps_the_text_model_and_its_init() {
 
         // The speech bit is kept and the speech model untouched; the text reload drops init.
         assert_eq!(rc, 0, "text reload: {error}");
-        assert_eq!(models, NEEDLE_TEXT | NEEDLE_SPEECH);
+        assert_eq!(models, CACTUS_TEXT | CACTUS_SPEECH);
         assert!(!survived);
-        assert!(envelope.contains("needle_init not called"), "{envelope}");
+        assert!(envelope.contains("cactus_init not called"), "{envelope}");
         assert_eq!(sound, sound_after);
         assert!(transcribe_rc >= 0);
     }

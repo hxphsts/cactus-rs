@@ -1,7 +1,7 @@
 name: Upstream pins
 
-# Weekly: has Cactus Compute moved either Hugging Face repository past the commit we pin? On
-# drift, one issue per repository carries everything needed to move the pin.
+# Weekly: has Cactus Compute published an engine release newer than the pinned one, or changed a
+# weight file? On drift, one issue per repository carries everything needed to move the pin.
 on:
   schedule:
     - cron: "37 5 * * 1" # Mondays 05:37 UTC
@@ -22,29 +22,22 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: compare upstream heads with the pins
+      - name: compare upstream with the pins
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          api=https://huggingface.co/api/models
+          hub=https://huggingface.co
           prebuilt=cactus-sys/prebuilt.toml
-          whistle_rs=cactus-rs/src/whistle/weights.rs
 
-          needle_repo=$(sed -nE 's/^repo = "([^"]+)"$/\1/p' "$prebuilt")
-          needle_pin=$(sed -nE 's/^commit = "([0-9a-f]{40})"$/\1/p' "$prebuilt")
-          whistle_repo=$(sed -nE 's/^    repo: "([^"]+)",$/\1/p' "$whistle_rs")
-          whistle_pin=$(sed -nE 's/^pub const WEIGHTS_REVISION: &str = "([0-9a-f]{40})";$/\1/p' "$whistle_rs")
-          for name in needle_repo needle_pin whistle_repo whistle_pin; do
-            [ -n "${!name}" ] || { echo "could not read $name from the sources"; exit 1; }
-          done
-
-          head_of() { curl -sSf --retry 5 --retry-all-errors "$api/$1" | jq -er .sha; }
-          tree_of() { curl -sSf --retry 5 --retry-all-errors "$api/$1/tree/$2?recursive=true"; }
+          fetch() { curl -sSfL --retry 5 --retry-all-errors "$@"; }
+          head_of() { fetch "$hub/api/models/$1" | jq -er .sha; }
+          tree_of() { fetch "$hub/api/models/$1/tree/$2${3:+/$3}"; }
+          rust_const() { sed -nE "s/^pub const $1: &str = \"([0-9a-f]+)\";$/\\1/p" "$2"; }
 
           # Opens the repository's drift issue, or retitles and rewrites the open one.
-          file_issue() { # file_issue REPO NEW_SHA BODY_FILE
-            local title="Upstream pin drift: $1 ${2:0:12}" number
+          file_issue() { # file_issue REPO WHAT BODY_FILE
+            local title="Upstream pin drift: $1 $2" number
             number=$(gh issue list --state open --search "\"Upstream pin drift: $1\" in:title" \
               --json number,title --jq "[.[] | select(.title | startswith(\"Upstream pin drift: $1 \"))][0].number // empty")
             if [ -n "$number" ]; then
@@ -54,69 +47,92 @@ jobs:
             fi
           }
 
-          # Needle: the engine archives, the header and the text weights all live at one commit.
-          needle_head=$(head_of "$needle_repo")
-          if [ "$needle_head" != "$needle_pin" ]; then
-            tree=$(tree_of "$needle_repo" "$needle_head")
+          # The engine: one folder per release under releases/, each with a manifest.json that
+          # lists the size and SHA-256 of every file. Drift is a release newer than the pinned one.
+          engine_repo=$(sed -nE 's/^repo = "([^"]+)"$/\1/p' "$prebuilt")
+          engine_pin=$(sed -nE 's/^release = "([^"]+)"$/\1/p' "$prebuilt")
+          header_pin=$(sed -nE 's/^#.*sha256 ([0-9a-f]{64}).*/\1/p' "$prebuilt" | head -n1)
+          for name in engine_repo engine_pin header_pin; do
+            [ -n "${!name}" ] || { echo "could not read $name from $prebuilt"; exit 1; }
+          done
+          engine_head=$(head_of "$engine_repo")
+          latest=$(tree_of "$engine_repo" "$engine_head" releases |
+            jq -r '.[] | select(.type == "directory") | .path | split("/")[1]' | sort -V | tail -n1)
+          [ -n "$latest" ] || { echo "no releases found in $engine_repo"; exit 1; }
+          if [ "$latest" != "$engine_pin" ]; then
+            manifest=$(fetch "$hub/$engine_repo/resolve/$engine_head/releases/$latest/manifest.json")
             body=$(mktemp)
-            header_sha=$(curl -sSfL --retry 5 --retry-all-errors "https://huggingface.co/$needle_repo/resolve/$needle_head/macos-arm64/needle.h" | sha256sum | cut -d' ' -f1)
-            header_oids=$(jq -r '[.[] | select(.path | endswith("/needle.h")) | .oid] | unique | length' <<< "$tree")
             old_platforms=$(sed -n '/^\[sha256\]/,$p' "$prebuilt" | sed -nE 's/^([a-z0-9_-]+) = .*/\1/p' | sort)
-            new_platforms=$(jq -r '.[] | select(.path | test("^[^/]+/libneedle\\.a$")) | .path | split("/")[0]' <<< "$tree" | sort)
+            new_platforms=$(jq -r '.files | keys[] | select(endswith("/libcactus.a")) | split("/")[0]' <<< "$manifest" | sort)
+            headers=$(jq -r '[.files | to_entries[] | select(.key | endswith("/cactus.h")) | .value.sha256] | unique | join(" ")' <<< "$manifest")
             {
-              echo "\`$needle_repo\` is at [\`$needle_head\`](https://huggingface.co/$needle_repo/tree/$needle_head); \`$prebuilt\` pins \`$needle_pin\`."
+              echo "\`$engine_repo\` has release \`$latest\` at [\`$engine_head\`]($hub/$engine_repo/tree/$engine_head/releases/$latest); \`$prebuilt\` pins \`$engine_pin\`."
               echo
               echo "### \`$prebuilt\`"
               echo
               echo '```toml'
-              echo "commit = \"$needle_head\""
+              echo "commit = \"$engine_head\""
+              echo "release = \"$latest\""
               echo
-              echo "# sha256 of \`<platform>/libneedle.a\` at the commit above."
+              echo "# sha256 of \`releases/<release>/<platform>/libcactus.a\` at the commit above."
               echo "[sha256]"
-              jq -r '.[] | select(.path | test("^[^/]+/libneedle\\.a$")) | "\(.path | split("/")[0]) = \"\(.lfs.oid // "NOT IN LFS: hash it by hand")\""' <<< "$tree" | sort
+              jq -r '.files | to_entries[] | select(.key | endswith("/libcactus.a")) | "\(.key | split("/")[0]) = \"\(.value.sha256)\""' <<< "$manifest" | sort
               echo '```'
               echo
-              echo "### \`needle.h\`"
+              echo "### \`cactus.h\`"
               echo
-              echo "sha256 \`$header_sha\` (\`macos-arm64/needle.h\`); $header_oids distinct header(s) across platforms. Update the comment in \`$prebuilt\`, \`cactus-sys/include/needle.h\` and \`cactus-sys/include/README.md\`."
+              if [ "$headers" = "$header_pin" ]; then
+                echo "Unchanged (sha256 \`$header_pin\`)."
+              else
+                echo "Changed: sha256 \`$headers\`, pinned \`$header_pin\`. Replace \`cactus-sys/include/cactus.h\`, update the comment in \`$prebuilt\` and \`cactus-sys/include/README.md\`, and bring \`cactus-sys/src/engine.rs\` in line; \`cargo test -p cactus-sys --test abi\` says where they differ."
+              fi
               echo
               echo "### Platforms"
               echo
               platform_diff=$(diff -u --label pinned --label upstream <(echo "$old_platforms") <(echo "$new_platforms") || true)
               if [ -z "$platform_diff" ]; then
-                echo "The same $(echo "$new_platforms" | wc -l | tr -d ' ') platforms as the pin."
+                echo "The same $(echo "$new_platforms" | wc -l | tr -d ' ') native platforms as the pin."
               else
                 printf '%s\n%s\n%s\n' '```diff' "$platform_diff" '```'
-                echo "Map a new platform in \`cactus-sys/build.rs\` before pinning it."
+                echo "Map a new native platform in \`cactus-sys/build.rs\` before pinning it."
               fi
               echo
-              echo "### \`needle3.cact\` (\`cactus-rs/src/needle/weights.rs\` \`WEIGHTS_SHA256\`)"
-              echo
-              jq -r '.[] | select(.path == "needle3.cact") | "sha256 `\(.lfs.oid // "not in LFS")`, \(.size) bytes"' <<< "$tree"
-              echo
-              echo "Then run \`.github/scripts/check-pins.sh\` and re-measure the conformance baselines."
+              echo "Then run \`.github/scripts/check-pins.sh\` and the \`cactus-sys\` probe tests with weights, which re-measure the engine's contracts."
             } > "$body"
             cat "$body"
-            file_issue "$needle_repo" "$needle_head" "$body"
+            file_issue "$engine_repo" "$latest" "$body"
           fi
 
-          # Whistle: one weight file.
-          whistle_head=$(head_of "$whistle_repo")
-          if [ "$whistle_head" != "$whistle_pin" ]; then
-            tree=$(tree_of "$whistle_repo" "$whistle_head")
+          # The weights: one file per repository. Upstream commits to these repositories for
+          # reasons that do not touch the weights, so drift is a change in the file's digest.
+          weights() { # weights SOURCE_FILE WEIGHT_FILE
+            local repo pin_rev pin_sha head now size body
+            repo=$(sed -nE 's/^    repo: "([^"]+)",$/\1/p' "$1")
+            pin_rev=$(rust_const WEIGHTS_REVISION "$1")
+            pin_sha=$(rust_const WEIGHTS_SHA256 "$1")
+            for name in repo pin_rev pin_sha; do
+              [ -n "${!name}" ] || { echo "could not read $name from $1"; exit 1; }
+            done
+            head=$(head_of "$repo")
+            now=$(tree_of "$repo" "$head" | jq -r --arg f "$2" '.[] | select(.path == $f) | .lfs.oid // empty')
+            size=$(tree_of "$repo" "$head" | jq -r --arg f "$2" '.[] | select(.path == $f) | .size')
+            [ -n "$now" ] || { echo "$repo has no $2 in LFS at $head"; exit 1; }
+            [ "$now" != "$pin_sha" ] || return 0
             body=$(mktemp)
             {
-              echo "\`$whistle_repo\` is at [\`$whistle_head\`](https://huggingface.co/$whistle_repo/tree/$whistle_head); \`$whistle_rs\` pins \`$whistle_pin\`."
+              echo "\`$2\` in \`$repo\` changed at [\`$head\`]($hub/$repo/tree/$head); \`$1\` pins \`$pin_rev\`."
               echo
               echo '```rust'
-              echo "pub const WEIGHTS_REVISION: &str = \"$whistle_head\";"
-              jq -r '.[] | select(.path == "whistle.cact") | "pub const WEIGHTS_SHA256: &str = \"\(.lfs.oid // "NOT IN LFS")\";"' <<< "$tree"
+              echo "pub const WEIGHTS_REVISION: &str = \"$head\";"
+              echo "pub const WEIGHTS_SHA256: &str = \"$now\";"
               echo '```'
               echo
-              jq -r '.[] | select(.path == "whistle.cact") | "`whistle.cact`: \(.size) bytes."' <<< "$tree"
+              echo "\`$2\`: $size bytes."
               echo
-              echo "Then run \`.github/scripts/check-pins.sh\` and update the size in the docs and add a CHANGELOG entry."
+              echo "Then run \`.github/scripts/check-pins.sh\`, update the size in the docs, re-measure the conformance baselines and add a CHANGELOG entry."
             } > "$body"
             cat "$body"
-            file_issue "$whistle_repo" "$whistle_head" "$body"
-          fi
+            file_issue "$repo" "${now:0:12}" "$body"
+          }
+          weights cactus-rs/src/needle/weights.rs needle3.cact
+          weights cactus-rs/src/whistle/weights.rs whistle.cact

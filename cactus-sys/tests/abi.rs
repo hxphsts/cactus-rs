@@ -1,17 +1,17 @@
 //! The hand-written `extern "C"` block must declare exactly what the vendored header declares.
 //!
-//! Nothing compiles `include/needle.h`: the bindings in `src/needle.rs` are written by hand, so a
+//! Nothing compiles `include/cactus.h`: the bindings in `src/engine.rs` are written by hand, so a
 //! header that moved without them is a silent ABI mismatch. This test reads both files as text,
 //! translates each C prototype into the Rust types it must bind to, and compares the two lists
 //! function by function. It links nothing and needs no engine archive.
 
 use std::collections::BTreeMap;
 
-const HEADER: &str = include_str!("../include/needle.h");
-const BINDINGS: &str = include_str!("../src/needle.rs");
+const HEADER: &str = include_str!("../include/cactus.h");
+const BINDINGS: &str = include_str!("../src/engine.rs");
 
 /// The prefix of every exported function, and of the export macro in upper case.
-const PREFIX: &str = "needle_";
+const PREFIX: &str = "cactus_";
 
 /// A function as `(parameter types, return type)`, in Rust spelling; `""` returns nothing.
 type Signature = (Vec<String>, String);
@@ -48,7 +48,7 @@ fn without_comments(source: &str) -> String {
     out
 }
 
-/// Every `NEEDLE_API <ret> needle_<name>(<params>);` in the header.
+/// Every `CACTUS_API <ret> cactus_<name>(<params>);` in the header.
 fn header_signatures() -> BTreeMap<String, Signature> {
     let export = format!("{}API ", PREFIX.to_uppercase());
     let source = without_comments(HEADER);
@@ -92,7 +92,7 @@ fn header_signatures() -> BTreeMap<String, Signature> {
     found
 }
 
-/// Every `pub fn needle_<name>(<params>) [-> <ret>];` in the bindings.
+/// Every `pub fn cactus_<name>(<params>) [-> <ret>];` in the bindings.
 fn binding_signatures() -> BTreeMap<String, Signature> {
     let code: String = BINDINGS
         .lines()
@@ -151,8 +151,9 @@ fn test_bindings_declare_what_the_header_declares() {
 #[test]
 fn test_kind_bits_match_the_header() {
     for (name, value) in [
-        ("TEXT", cactus_sys::NEEDLE_TEXT),
-        ("SPEECH", cactus_sys::NEEDLE_SPEECH),
+        ("TEXT", cactus_sys::CACTUS_TEXT),
+        ("SPEECH", cactus_sys::CACTUS_SPEECH),
+        ("VISION", cactus_sys::CACTUS_VISION),
     ] {
         let define = format!("#define {}{name} {value}", PREFIX.to_uppercase());
         assert!(

@@ -385,7 +385,7 @@ fn transcribe(out: &mut Vec<u8>, pcm: &[f32], audio: &EncodedAudio) -> Result<Tr
     out[0] = 0;
 
     let mut guard = ffi::lock();
-    // The options go with every call: `needle_transcribe` never reads `needle_set_audio`'s.
+    // The options go with every call: `cactus_transcribe` never reads `cactus_set_audio`'s.
     let rc = guard.transcribe(pcm, audio, out)?;
     if rc < 0 {
         // A failed transcription writes no envelope; the reason is only in the error slot, and
