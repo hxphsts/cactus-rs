@@ -1,15 +1,15 @@
-//! Probe: what `needle_load` of a second, different speech archive does to a loaded speech model.
+//! Probe: what `cactus_load` of a second, different speech archive does to a loaded speech model.
 //!
 //! Its own test binary, so its own process: engine state is global and cannot be undone. Skips
 //! unless `CACTUS_WHISTLE_WEIGHTS` names a `whistle.cact`. Every measurement is printed and the
 //! observed behaviour asserted, so an engine that changes it turns this red.
 
-#![cfg(feature = "needle")]
+#![cfg(feature = "engine")]
 
 use core::ffi::{CStr, c_char, c_int, c_ulonglong};
 
 use cactus_sys::{
-    NEEDLE_SPEECH, needle_embed, needle_last_error, needle_load, needle_models, needle_transcribe,
+    CACTUS_SPEECH, cactus_embed, cactus_last_error, cactus_load, cactus_models, cactus_transcribe,
 };
 
 // ---- Shared probe helpers, duplicated in each probe file on purpose: every probe is its own
@@ -27,14 +27,14 @@ fn archive(var: &str) -> Option<Vec<u8>> {
     Some(std::fs::read(&path).unwrap_or_else(|error| panic!("{var}: {error}")))
 }
 
-/// Copies [`needle_last_error`] out before the next call can invalidate it.
+/// Copies [`cactus_last_error`] out before the next call can invalidate it.
 ///
 /// # Safety
 ///
 /// Every engine call must be serialised, as each probe's single test function does.
 unsafe fn last_error() -> String {
     // SAFETY: serialised by the caller; the pointer is checked and copied before returning.
-    let ptr = unsafe { needle_last_error() };
+    let ptr = unsafe { cactus_last_error() };
     if ptr.is_null() {
         return String::new();
     }
@@ -44,14 +44,14 @@ unsafe fn last_error() -> String {
         .into_owned()
 }
 
-/// `needle_load` of `bytes`: the return code, the error text when it failed, and the models after.
+/// `cactus_load` of `bytes`: the return code, the error text when it failed, and the models after.
 ///
 /// # Safety
 ///
 /// Every engine call must be serialised.
 unsafe fn load(label: &str, bytes: &[u8]) -> (c_int, String, c_int) {
     // SAFETY: `bytes` is valid for its length for the call; serialised by the caller.
-    let rc = unsafe { needle_load(bytes.as_ptr(), bytes.len() as c_ulonglong) };
+    let rc = unsafe { cactus_load(bytes.as_ptr(), bytes.len() as c_ulonglong) };
     // SAFETY: serialised by the caller.
     let error = if rc < 0 {
         unsafe { last_error() }
@@ -59,8 +59,8 @@ unsafe fn load(label: &str, bytes: &[u8]) -> (c_int, String, c_int) {
         String::new()
     };
     // SAFETY: serialised by the caller.
-    let models = unsafe { needle_models() };
-    println!("{label}: needle_load rc {rc}, last_error {error:?}, needle_models {models}");
+    let models = unsafe { cactus_models() };
+    println!("{label}: cactus_load rc {rc}, last_error {error:?}, cactus_models {models}");
     (rc, error, models)
 }
 
@@ -177,7 +177,7 @@ fn lights_en() -> Vec<f32> {
         .collect()
 }
 
-/// `needle_embed` of `pcm`: the whole flattened frame matrix.
+/// `cactus_embed` of `pcm`: the whole flattened frame matrix.
 ///
 /// # Safety
 ///
@@ -186,7 +186,7 @@ unsafe fn embed_pcm(label: &str, pcm: &[f32]) -> Vec<f32> {
     let samples = pcm.len() as c_int;
     // SAFETY: a null output only asks for the count; serialised by the caller.
     let count = unsafe {
-        needle_embed(
+        cactus_embed(
             core::ptr::null(),
             pcm.as_ptr(),
             samples,
@@ -200,7 +200,7 @@ unsafe fn embed_pcm(label: &str, pcm: &[f32]) -> Vec<f32> {
     let mut out = vec![0f32; count as usize];
     // SAFETY: `pcm` holds `samples` floats, `out` holds `count`; serialised by the caller.
     let rc = unsafe {
-        needle_embed(
+        cactus_embed(
             core::ptr::null(),
             pcm.as_ptr(),
             samples,
@@ -210,13 +210,13 @@ unsafe fn embed_pcm(label: &str, pcm: &[f32]) -> Vec<f32> {
     };
     assert_eq!(rc, count, "embed: {}", unsafe { last_error() });
     println!(
-        "{label}: needle_embed(pcm) {count} floats, first 8 {:?}",
+        "{label}: cactus_embed(pcm) {count} floats, first 8 {:?}",
         &out[..8]
     );
     out
 }
 
-/// `needle_transcribe` of `pcm` in English: the return code and the envelope.
+/// `cactus_transcribe` of `pcm` in English: the return code and the envelope.
 ///
 /// # Safety
 ///
@@ -225,7 +225,7 @@ unsafe fn transcribe(label: &str, pcm: &[f32]) -> (c_int, String) {
     let mut out = vec![0u8; OUT];
     // SAFETY: `pcm` holds its length in floats, `out` holds `OUT` bytes; serialised by the caller.
     let rc = unsafe {
-        needle_transcribe(
+        cactus_transcribe(
             pcm.as_ptr(),
             pcm.len() as c_int,
             c"en".as_ptr(),
@@ -245,7 +245,7 @@ unsafe fn transcribe(label: &str, pcm: &[f32]) -> (c_int, String) {
         .unwrap()
         .to_string_lossy()
         .into_owned();
-    println!("{label}: needle_transcribe rc {rc}, last_error {error:?}, envelope {envelope}");
+    println!("{label}: cactus_transcribe rc {rc}, last_error {error:?}, envelope {envelope}");
     (rc, envelope)
 }
 
@@ -262,7 +262,7 @@ fn a_second_speech_archive_replaces_or_is_ignored() {
     unsafe {
         let (rc, _, models) = load("original", &original);
         assert_eq!(rc, 0);
-        assert_eq!(models, NEEDLE_SPEECH);
+        assert_eq!(models, CACTUS_SPEECH);
         let before = embed_pcm("before", &tone);
         let (transcribe_rc_before, text_before) = transcribe("before", &clip);
         assert!(transcribe_rc_before >= 0);
@@ -278,7 +278,7 @@ fn a_second_speech_archive_replaces_or_is_ignored() {
         // Measured at c7c415a3: a different speech archive is accepted and REPLACES the loaded
         // speech model; the embedding of the same tone moves.
         assert_eq!(rc, 0, "perturbed load: {error}");
-        assert_eq!(models, NEEDLE_SPEECH);
+        assert_eq!(models, CACTUS_SPEECH);
         assert!(changed, "a different speech archive is no longer ignored");
         assert!(transcribe_rc >= 0);
 
@@ -289,7 +289,7 @@ fn a_second_speech_archive_replaces_or_is_ignored() {
         let (rc, error, models) = load("needle 2 tag + junk", &retagged);
         assert!(rc < 0);
         assert_eq!(error, "invalid .cact model");
-        assert_eq!(models, NEEDLE_SPEECH);
+        assert_eq!(models, CACTUS_SPEECH);
         assert_eq!(embed_pcm("after rejected load", &tone), after);
 
         // Loading the original again restores it exactly: the replacement is complete.

@@ -491,7 +491,7 @@ mod tests {
         let text = needle.display().to_string();
         assert!(text.contains("cactus-rs"));
         assert!(text.contains("needle3"));
-        assert!(text.contains(&cactus_sys::NEEDLE_ENGINE_COMMIT[..12]));
+        assert!(text.contains(&crate::needle::weights::WEIGHTS_REVISION[..12]));
         assert!(text.ends_with("needle3.cact"));
 
         let whistle = WHISTLE.cache_path();
@@ -515,7 +515,7 @@ mod tests {
             NEEDLE.url_with(HF_DEFAULT_ENDPOINT),
             format!(
                 "https://huggingface.co/Cactus-Compute/needle3/resolve/{}/needle3.cact",
-                cactus_sys::NEEDLE_ENGINE_COMMIT
+                crate::needle::weights::WEIGHTS_REVISION
             )
         );
         assert_eq!(

@@ -1,7 +1,7 @@
 /*
  * One function from recent LLVM libc++, for systems whose libc++ is older.
  *
- * The Needle engine archive is compiled against a libc++ in which the byte hash behind
+ * The Cactus engine archive is compiled against a libc++ in which the byte hash behind
  * std::hash<std::string> lives in the library, as std::__1::__hash_memory(const void*, size_t).
  * libc++ 18 and 20 were checked and do not export it, so distributions that package them
  * (Ubuntu 24.04 among them) fail to link the archive with exactly one undefined symbol.

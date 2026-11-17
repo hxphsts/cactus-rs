@@ -1,31 +1,37 @@
-# Pinned Cactus Compute Needle 3 engine release.
+# Pinned Cactus Compute engine release.
 #
 # `build.rs` reads this file with `include_str!` and a small `key = "value"` scanner, so the
 # syntax stays a strict subset of TOML: comments, one table header, and quoted scalar values.
 #
-# To move the pin: bump `commit`, download every `<platform>/libneedle.a` from
-# `https://huggingface.co/<repo>/resolve/<commit>/<platform>/libneedle.a`, and replace the
-# digests below with `shasum -a 256` output. All 15 platforms ship the same `needle.h`
-# (sha256 90f347f9dca1199de79967ab199a56e0588bd473fe306051f8d80d146976a324), vendored as
-# `include/needle.h` for reference.
+# One engine runs Needle 3 (text), Whistle (speech) and Mirage (vision). Upstream publishes it as
+# `releases/<release>/<platform>/libcactus.a`, with a `manifest.json` per release that lists the
+# size and SHA-256 of every file.
+#
+# To move the pin: bump `commit` and `release`, and replace the digests below with the
+# `<platform>/libcactus.a` entries of
+# `https://huggingface.co/<repo>/resolve/<commit>/releases/<release>/manifest.json`. All
+# platforms ship the same `cactus.h`
+# (sha256 9be7eb25b1d89180495d04a0d2c27053f282dac85add50cacc48d73302819d9d), vendored as
+# `include/cactus.h` for reference.
 
-repo = "Cactus-Compute/needle3"
-commit = "c7c415a3d1b3d929014bc6e866d51ebb971f7089"
+repo = "Cactus-Compute/cactus"
+commit = "d2c5cd70432ed78345f3ba6b620bff2feeec6c86"
+release = "4.1.1"
 
-# sha256 of `<platform>/libneedle.a` at the commit above.
+# sha256 of `releases/<release>/<platform>/libcactus.a` at the commit above.
 [sha256]
-android-arm64 = "16752fb75adea7af89bbc435a97d1cda7e71bc74d04578d551d0d3bbd5f9e633"
-android-armv7 = "8cb5af3c2a7e6ad55a1fe94cb9b6c012b40ae921aae2981594362389872fa7c0"
-android-riscv64 = "5580972d83ea6eb466c0989d605935233360564b24f20ef7f671c08e0e8f7482"
-ios-arm64 = "e507b914d32cfe7dfbc9be8de65dc899451d8cbd38a63b2e47bfddaca73373ac"
-ios-sim-arm64 = "a75a67f98c057cef82977e5e1e3d505b57fed131710a5ae89683ad9d0d74d849"
-linux-arm64 = "d6e33724cab170f0a25bd943d3a8ed5da925fcb793e9fcb1f201bf2478a50f91"
-linux-armv7 = "f3cdfcc9a5e9aa3afcd0af6612fe2d6099f85c31b7fb5a7d486e3362e7e60c57"
-linux-mipsel = "3a17c4c012075510c9f24321a98259dd02a2d6e03adf11a492c5951d1cbd5b7e"
-linux-riscv64 = "6e84c1fac7562fc507962a26dd1f25ae4203f755ab16104551fe365dc0833c05"
-linux-x86_64 = "5c0ff309dcf9c2238bd07986d9d100069d568596c2378f0bfedc1677cc02f756"
-macos-arm64 = "a3b9163abe7b4bd52487c4005506cb35c5163bb9b9587af4ae07ed7587de697d"
-tvos-arm64 = "fe1105a1f377f40a79a225336256e2cc2b8da18836d0871f549afb31099a6d76"
-watchos-arm64 = "bc0e82958495dc8a9f041faef071b61300c10472b1d3566fcf41934309cdff70"
-windows-arm64 = "e6c479a4094896785a22c2a54e3c8bfd8f60903488651ad6d4b47685512cec61"
-windows-x86_64 = "a2501f416a562bf0c2ad734821dd190571d22ced22c104372b8cd41b40245114"
+android-arm64 = "01b91dae81d7e94ce55691376838d8b10453d33d7433ddd1b59bf4a9669012b9"
+android-armv7 = "f1b846d2fca91d80d7cc6b4d0deca72c2af993e5fa54eb5a467f5a07a38a7efa"
+android-riscv64 = "c611651a0a4de08d301391a3d08ad334f9585ac29073d891aab224286b8c22d6"
+ios-arm64 = "134739c1e867a5927374baa68d2ac0621ac293be9b7fab8379d94a70904a7966"
+ios-sim-arm64 = "ea0f3263035fb7183b545d4added7027e00fd0d94abeb1f7b786065ce9052281"
+linux-arm64 = "365affa5087be1119f7631f2c83f7e7fe437903d719e1f4c976a08473346b48c"
+linux-armv7 = "50d437bbe6d0b4d9c244661b448dae43b5d57cfd0041c5d7ec9ade42e7e08a5c"
+linux-mipsel = "9b13bfc644eee2712f62de53b458be0bb93a5c7eedcc574c1a64812ebb77e4d4"
+linux-riscv64 = "c17e1f7811fd223e8e6c6d8206af34655b76173abe4f4028592bc68e41a64dbe"
+linux-x86_64 = "913f3d71f1eae9dc7734700380689ba8872a092da92fffd56ed6cf4308ffb038"
+macos-arm64 = "f611ff8be89764be29bba251a97cba1b15382658e1739d35f873b587fda5554d"
+tvos-arm64 = "13dbc117e389ff95ce0a8b20882b2e9febb59687f050b0c9a7d2aa205f0d9ff2"
+watchos-arm64 = "55b4b868694625ed145496cb2b1a7cd6b5c6462382972e336bfd9f687b1ca055"
+windows-arm64 = "43a14898942f9b526c0514c2f4dd1aa6200b4af9c5cdee682633c15cee502a5e"
+windows-x86_64 = "1c667e54b46944e971fd74445fc735b3e8b0710c265deed7713e003e781a7862"

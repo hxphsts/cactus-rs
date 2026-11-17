@@ -64,8 +64,8 @@ impl Kind {
     /// This kind's bit in the [`Guard::models`] mask.
     pub(crate) const fn bit(self) -> c_int {
         match self {
-            Kind::Text => cactus_sys::NEEDLE_TEXT,
-            Kind::Speech => cactus_sys::NEEDLE_SPEECH,
+            Kind::Text => cactus_sys::CACTUS_TEXT,
+            Kind::Speech => cactus_sys::CACTUS_SPEECH,
         }
     }
 
@@ -194,14 +194,14 @@ impl Guard {
     pub(crate) fn models(&mut self) -> c_int {
         // SAFETY: the guard holds ENGINE, so no other engine call is in flight; the function
         // takes no pointers.
-        unsafe { cactus_sys::needle_models() }
+        unsafe { cactus_sys::cactus_models() }
     }
 
     /// The engine's reason for the last failure, copied out; empty when it gave none.
     pub(crate) fn last_error(&mut self) -> String {
         // SAFETY: the guard holds ENGINE, so no other engine call is in flight, and nothing is
         // called between this and the copy below, so the runtime-owned string is still valid.
-        let reason = unsafe { cactus_sys::needle_last_error() };
+        let reason = unsafe { cactus_sys::cactus_last_error() };
         if reason.is_null() {
             return String::new();
         }
@@ -218,7 +218,7 @@ impl Guard {
         // for reads of `bytes.len()` bytes for the whole call, and that is the length passed
         // (a `usize` always fits a `c_ulonglong`). The engine copies what it needs before
         // returning.
-        unsafe { cactus_sys::needle_load(bytes.as_ptr(), bytes.len() as c_ulonglong) }
+        unsafe { cactus_sys::cactus_load(bytes.as_ptr(), bytes.len() as c_ulonglong) }
     }
 
     /// Builds the text model's conversation prefix and returns its token count.
@@ -233,7 +233,7 @@ impl Guard {
         // SAFETY: the guard holds ENGINE, so no other engine call is in flight. Each pointer is
         // null or a NUL-terminated string borrowed for the whole call. A missing text model is a
         // failure the engine reports, not undefined behaviour.
-        unsafe { cactus_sys::needle_init(system, tools.as_ptr(), tool_index) }
+        unsafe { cactus_sys::cactus_init(system, tools.as_ptr(), tool_index) }
     }
 
     /// Runs one completion, writing the NUL-terminated envelope into `out`.
@@ -255,7 +255,7 @@ impl Guard {
         // MAX_SAMPLES) readable floats, both borrowed for the call. `out` is valid for writes of
         // `out.len()` bytes and `capacity` is no larger.
         let rc = unsafe {
-            cactus_sys::needle_complete(
+            cactus_sys::cactus_complete(
                 text,
                 pcm,
                 samples,
@@ -273,7 +273,7 @@ impl Guard {
         // SAFETY: the guard holds ENGINE, so no other engine call is in flight. Both pointers
         // are null or NUL-terminated strings owned by `audio`, borrowed for the call; the engine
         // copies them.
-        unsafe { cactus_sys::needle_set_audio(language, keywords, word_timestamps) };
+        unsafe { cactus_sys::cactus_set_audio(language, keywords, word_timestamps) };
     }
 
     /// Transcribes one clip, writing the NUL-terminated envelope into `out`.
@@ -296,7 +296,7 @@ impl Guard {
         // NUL-terminated and owned by `audio`, and `out` is valid for writes of `out.len()`
         // bytes with `capacity` no larger; all are borrowed for the call.
         let rc = unsafe {
-            cactus_sys::needle_transcribe(
+            cactus_sys::cactus_transcribe(
                 pcm.as_ptr(),
                 samples,
                 language,
@@ -320,7 +320,7 @@ impl Guard {
         // SAFETY: the guard holds ENGINE, so no other engine call is in flight. `Input::raw`
         // gives exactly one non-null input pointer, valid for the call, and a null `out` with
         // capacity 0 is the documented size query.
-        let rc = unsafe { cactus_sys::needle_embed(text, pcm, samples, ptr::null_mut(), 0) };
+        let rc = unsafe { cactus_sys::cactus_embed(text, pcm, samples, ptr::null_mut(), 0) };
         Ok(rc)
     }
 
@@ -337,7 +337,7 @@ impl Guard {
         // gives exactly one non-null input pointer, valid for the call; `out` is valid for
         // writes of `out.len()` floats and `capacity` is no larger.
         let rc =
-            unsafe { cactus_sys::needle_embed(text, pcm, samples, out.as_mut_ptr(), capacity) };
+            unsafe { cactus_sys::cactus_embed(text, pcm, samples, out.as_mut_ptr(), capacity) };
         Ok(rc)
     }
 
@@ -345,7 +345,7 @@ impl Guard {
     pub(crate) fn reset(&mut self) {
         // SAFETY: the guard holds ENGINE, so no other engine call, of either kind, is in flight;
         // the function takes no pointers.
-        unsafe { cactus_sys::needle_reset() };
+        unsafe { cactus_sys::cactus_reset() };
     }
 }
 
@@ -380,7 +380,7 @@ impl Slot {
     ///
     /// The archive loaded as this kind, known by its fingerprint, is reused without the engine.
     /// Any other archive is classified from its tensor directory first, so that only an archive
-    /// of this kind ever reaches `needle_load`: one of the other kind is [`Error::WrongModel`]
+    /// of this kind ever reaches `cactus_load`: one of the other kind is [`Error::WrongModel`]
     /// (checked before a mismatch of this kind, so a wrong archive is named as such whatever
     /// else is loaded), and one of this kind while another is loaded is
     /// [`Error::WeightsAlreadyLoaded`].
@@ -388,7 +388,7 @@ impl Slot {
     /// The engine would not refuse either. Measured against the pinned engine by the cactus-sys
     /// probes `probe_text_reload.rs`, `probe_speech_reload.rs`, `probe_cross_kind.rs` and
     /// `probe_same_reload.rs`: a load of a kind already held hot-swaps that kind's model, and a
-    /// text load, even of the same bytes, drops the `needle_init` prefix; the kinds are
+    /// text load, even of the same bytes, drops the `cactus_init` prefix; the kinds are
     /// independent, and a rejected load changes nothing.
     ///
     /// # Errors
@@ -437,7 +437,7 @@ impl Slot {
             // Copied while the guard is held: the string is valid only until the next call.
             return Err(Error::LoadFailed {
                 model: mine.model(),
-                detail: or_unexplained(guard.last_error(), "needle_load", rc),
+                detail: or_unexplained(guard.last_error(), "cactus_load", rc),
             });
         }
 

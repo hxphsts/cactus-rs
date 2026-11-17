@@ -2,7 +2,7 @@
 //!
 //! ## Overview
 //!
-//! Every [`needle_transcribe`](cactus_sys::needle_transcribe) call writes one JSON object, and
+//! Every [`cactus_transcribe`](cactus_sys::cactus_transcribe) call writes one JSON object, and
 //! [`Transcript`] is that object parsed:
 //!
 //! ```json

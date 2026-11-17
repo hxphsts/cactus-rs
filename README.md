@@ -111,7 +111,7 @@ Intel macOS and Windows MSVC are not supported, because upstream ships no archiv
 - Tool-index persistence
 - Subprocess isolation for several tuned models
 
-Not planned: the general Cactus engine (`cactus_engine.h`). It builds for ARM64 only, ships no prebuilt archive or stable header, is distributed under a source-available licence that permits free use only below a funding and revenue threshold, and reports usage to Cactus Compute at every model load. Needle 2 is not planned either: its archive exports the same symbols as Needle 3, so the two cannot be linked into one binary. A Needle 2 archive handed to this crate is named as such in the error.
+The engine linked here is Cactus engine 4 (`libcactus.a`, `cactus.h`), the one upstream publishes prebuilt for Needle 3, Whistle and Mirage. Not planned: the older general SDK (`cactus_engine.h`). It builds for ARM64 only, ships no prebuilt archive or stable header, is distributed under a source-available licence that permits free use only below a funding and revenue threshold, and reports usage to Cactus Compute at every model load. Needle 2 is not planned either: its archive exports the same symbols as Needle 3, so the two cannot be linked into one binary. A Needle 2 archive handed to this crate is named as such in the error.
 
 ## Documentation
 
@@ -119,4 +119,4 @@ See https://docs.rs/cactus-rs
 
 ## License
 
-MIT OR Apache-2.0. The vendored `needle.h` and the smart-home test data are Cactus Compute's, under Apache-2.0, with provenance noted beside each. The spoken test clips were synthesised for this repository with Piper TTS from public-domain and CC0 voices, and the JFK clip is in the public domain; see `cactus-rs/tests/data/README.md`. This project is unofficial and not affiliated with Cactus Compute.
+MIT OR Apache-2.0. The vendored `cactus.h` and the smart-home test data are Cactus Compute's, under Apache-2.0, with provenance noted beside each. The spoken test clips were synthesised for this repository with Piper TTS from public-domain and CC0 voices, and the JFK clip is in the public domain; see `cactus-rs/tests/data/README.md`. This project is unofficial and not affiliated with Cactus Compute.

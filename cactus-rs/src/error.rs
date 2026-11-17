@@ -146,7 +146,7 @@ pub enum Error {
     )]
     Load,
 
-    /// `needle_load` rejected the archive; `detail` is the engine's own reason.
+    /// `cactus_load` rejected the archive; `detail` is the engine's own reason.
     #[error(
         "the engine rejected the {model} archive: {detail}\n\
          The magic tag was right but the engine could not load the bytes, which usually means a \
@@ -156,20 +156,20 @@ pub enum Error {
     LoadFailed {
         /// The model that was being built.
         model: Model,
-        /// The engine's own reason, from `needle_last_error`.
+        /// The engine's own reason, from `cactus_last_error`.
         detail: String,
     },
 
     /// Not returned since 0.2.1; see [`Error::InitFailed`], which carries the engine's reason.
     #[error(
         "the engine could not initialise the conversation prefix\n\
-         needle_init returned a non-positive token count, which happens when the weights are not \
+         cactus_init returned a non-positive token count, which happens when the weights are not \
          loaded or the tool index path does not exist.\n\
          Help: check that the tool index path exists and that the weights loaded successfully."
     )]
     Init,
 
-    /// `needle_init` failed; `detail` includes the engine's reason (e.g. the measured token count
+    /// `cactus_init` failed; `detail` includes the engine's reason (e.g. the measured token count
     /// when the prefix overflows the context).
     #[error(
         "the engine could not initialise the conversation prefix: {detail}\n\
@@ -179,12 +179,12 @@ pub enum Error {
          path exists."
     )]
     InitFailed {
-        /// The engine's own reason, from `needle_last_error`, with the count `needle_init`
+        /// The engine's own reason, from `cactus_last_error`, with the count `cactus_init`
         /// returned.
         detail: String,
     },
 
-    /// `needle_complete` failed, with whatever detail the engine wrote into the buffer.
+    /// `cactus_complete` failed, with whatever detail the engine wrote into the buffer.
     #[error(
         "the engine failed to complete the request: {detail}\n\
          Help: reset the conversation, shorten the input, or raise max_new_tokens."
@@ -209,12 +209,12 @@ pub enum Error {
     /// Not returned since 0.2.1; see [`Error::EmbedFailed`], which carries the engine's reason.
     #[error(
         "the engine failed to embed the input\n\
-         needle_embed returned a negative value, which happens when no weights are loaded.\n\
+         cactus_embed returned a negative value, which happens when no weights are loaded.\n\
          Help: build the Needle from valid weights before embedding."
     )]
     Embed,
 
-    /// `needle_embed` failed on text: the engine's reason, or a float-count mismatch ("engine
+    /// `cactus_embed` failed on text: the engine's reason, or a float-count mismatch ("engine
     /// wrote N floats, expected D").
     #[error(
         "the engine failed to embed the input: {detail}\n\
@@ -222,7 +222,7 @@ pub enum Error {
          if they are."
     )]
     EmbedFailed {
-        /// The engine's own reason, from `needle_last_error`, or the float-count mismatch.
+        /// The engine's own reason, from `cactus_last_error`, or the float-count mismatch.
         detail: String,
     },
 
@@ -273,25 +273,25 @@ pub enum Error {
         index: usize,
     },
 
-    /// `needle_transcribe` failed, with the engine's reason.
+    /// `cactus_transcribe` failed, with the engine's reason.
     #[error(
         "the engine failed to transcribe the clip: {detail}\n\
          Help: check that the clip is 16 kHz mono PCM in [-1, 1], and that the Whistle weights \
          loaded successfully."
     )]
     Transcribe {
-        /// The engine's own reason, from `needle_last_error`.
+        /// The engine's own reason, from `cactus_last_error`.
         detail: String,
     },
 
-    /// `needle_embed` failed on a clip, with the engine's reason.
+    /// `cactus_embed` failed on a clip, with the engine's reason.
     #[error(
         "the engine failed to embed the clip: {detail}\n\
          Help: check that the clip is 16 kHz mono PCM in [-1, 1], and that the Whistle weights \
          loaded successfully."
     )]
     EmbedAudio {
-        /// The engine's own reason, from `needle_last_error`.
+        /// The engine's own reason, from `cactus_last_error`.
         detail: String,
     },
 
@@ -631,9 +631,9 @@ mod tests {
         assert!(load.to_string().contains("bad tensor table"));
 
         let init = Error::InitFailed {
-            detail: "needle_init returned -1: 40000 tokens".to_owned(),
+            detail: "cactus_init returned -1: 40000 tokens".to_owned(),
         };
-        assert_eq!(init.detail(), Some("needle_init returned -1: 40000 tokens"));
+        assert_eq!(init.detail(), Some("cactus_init returned -1: 40000 tokens"));
 
         let embed = Error::EmbedFailed {
             detail: "engine wrote 12 floats, expected 3072".to_owned(),

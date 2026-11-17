@@ -36,22 +36,21 @@ jobs:
         with:
           workspaces: ". -> target"
       # The weights the engine tests run against, read from the constants the crate itself pins,
-      # so a pin moves in one place: the Needle weights live at the engine commit in
-      # prebuilt.toml, the Whistle weights at WEIGHTS_REVISION.
+      # so a pin moves in one place: each model's WEIGHTS_REVISION and WEIGHTS_SHA256.
       - name: read the weight pins
         run: |
           rust_const() { sed -nE "s/^pub const $1: &str = \"([0-9a-f]+)\";$/\\1/p" "$2"; }
-          commit=$(sed -nE 's/^commit = "([0-9a-f]{40})"$/\1/p' cactus-sys/prebuilt.toml)
-          needle_repo=$(sed -nE 's/^repo = "([^"]+)"$/\1/p' cactus-sys/prebuilt.toml)
+          needle_repo=$(sed -nE 's/^    repo: "([^"]+)",$/\1/p' cactus-rs/src/needle/weights.rs)
+          needle_rev=$(rust_const WEIGHTS_REVISION cactus-rs/src/needle/weights.rs)
           needle_sha=$(rust_const WEIGHTS_SHA256 cactus-rs/src/needle/weights.rs)
           whistle_repo=$(sed -nE 's/^    repo: "([^"]+)",$/\1/p' cactus-rs/src/whistle/weights.rs)
           whistle_rev=$(rust_const WEIGHTS_REVISION cactus-rs/src/whistle/weights.rs)
           whistle_sha=$(rust_const WEIGHTS_SHA256 cactus-rs/src/whistle/weights.rs)
-          for name in commit needle_repo needle_sha whistle_repo whistle_rev whistle_sha; do
+          for name in needle_repo needle_rev needle_sha whistle_repo whistle_rev whistle_sha; do
             [ -n "${!name}" ] || { echo "could not read $name from the sources"; exit 1; }
           done
           {
-            echo "NEEDLE_WEIGHTS_URL=https://huggingface.co/$needle_repo/resolve/$commit/needle3.cact"
+            echo "NEEDLE_WEIGHTS_URL=https://huggingface.co/$needle_repo/resolve/$needle_rev/needle3.cact"
             echo "NEEDLE_WEIGHTS_SHA256=$needle_sha"
             echo "WHISTLE_WEIGHTS_URL=https://huggingface.co/$whistle_repo/resolve/$whistle_rev/whistle.cact"
             echo "WHISTLE_WEIGHTS_SHA256=$whistle_sha"
@@ -190,25 +189,26 @@ jobs:
           if cargo build -p cactus-rs --no-default-features 2> refusal.log; then
             echo "built without an engine archive"; exit 1
           fi
-          grep -q "CACTUS_NEEDLE_LIB_DIR" refusal.log
+          grep -q "CACTUS_LIB_DIR" refusal.log
       - name: read the engine pin
         run: |
           repo=$(sed -nE 's/^repo = "([^"]+)"$/\1/p' cactus-sys/prebuilt.toml)
           commit=$(sed -nE 's/^commit = "([0-9a-f]{40})"$/\1/p' cactus-sys/prebuilt.toml)
           sha=$(sed -nE 's/^macos-arm64 = "([0-9a-f]{64})"$/\1/p' cactus-sys/prebuilt.toml)
-          for name in repo commit sha; do
+          release=$(sed -nE 's/^release = "([^"]+)"$/\1/p' cactus-sys/prebuilt.toml)
+          for name in repo commit release sha; do
             [ -n "${!name}" ] || { echo "could not read $name from cactus-sys/prebuilt.toml"; exit 1; }
           done
           {
-            echo "ENGINE_URL=https://huggingface.co/$repo/resolve/$commit/macos-arm64/libneedle.a"
+            echo "ENGINE_URL=https://huggingface.co/$repo/resolve/$commit/releases/$release/macos-arm64/libcactus.a"
             echo "ENGINE_SHA256=$sha"
           } | tee -a "$GITHUB_ENV"
       - name: builds against a local archive
         run: |
           mkdir -p engine
-          curl -sfL "$ENGINE_URL" -o engine/libneedle.a
-          echo "$ENGINE_SHA256  engine/libneedle.a" | shasum -a 256 -c -
-          CACTUS_NEEDLE_LIB_DIR="$PWD/engine" cargo build -p cactus-rs --no-default-features
+          curl -sfL "$ENGINE_URL" -o engine/libcactus.a
+          echo "$ENGINE_SHA256  engine/libcactus.a" | shasum -a 256 -c -
+          CACTUS_LIB_DIR="$PWD/engine" cargo build -p cactus-rs --no-default-features
 
   # Both crates must build from their own tarballs, in dependency order.
   package:

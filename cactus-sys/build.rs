@@ -1,11 +1,12 @@
 //! Build script for `cactus-sys`.
 //!
-//! It resolves exactly one `libneedle.a` for the target and emits the link directives for it.
+//! It resolves exactly one `libcactus.a` for the target and emits the link directives for it.
 //! Resolution order, first match wins:
 //!
-//! 1. feature `needle` off: nothing to link.
+//! 1. feature `engine` off: nothing to link.
 //! 2. `DOCS_RS` set: documentation builds do not link the engine.
-//! 3. `CACTUS_NEEDLE_LIB_DIR`: link the archive the caller points at.
+//! 3. `CACTUS_LIB_DIR`: link the archive the caller points at. `CACTUS_NEEDLE_LIB_DIR`, the name
+//!    this variable had before the engine was renamed, is still read, with a warning.
 //! 4. feature `download-binaries`: fetch the pinned archive for the target from `HF_ENDPOINT`
 //!    (default `https://huggingface.co`) and verify its SHA-256 against `prebuilt.toml`. With
 //!    `HF_HUB_OFFLINE` set (to anything but `0`) only an archive already in `OUT_DIR` is used.
@@ -19,37 +20,46 @@ use std::process;
 const PREBUILT: &str = include_str!("prebuilt.toml");
 
 /// File name of the engine archive on every upstream platform, Windows included.
-const ARCHIVE: &str = "libneedle.a";
+const ARCHIVE: &str = "libcactus.a";
+
+/// What `CACTUS_LIB_DIR` was called while the engine shipped as `libneedle.a`.
+const LEGACY_LIB_DIR: &str = "CACTUS_NEEDLE_LIB_DIR";
 
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-changed=prebuilt.toml");
-    println!("cargo::rerun-if-env-changed=CACTUS_NEEDLE_LIB_DIR");
+    println!("cargo::rerun-if-env-changed=CACTUS_LIB_DIR");
+    println!("cargo::rerun-if-env-changed={LEGACY_LIB_DIR}");
     println!("cargo::rerun-if-env-changed=CACTUS_CXXSTDLIB");
     println!("cargo::rerun-if-env-changed=DOCS_RS");
     println!("cargo::rerun-if-env-changed=HF_ENDPOINT");
     println!("cargo::rerun-if-env-changed=HF_HUB_OFFLINE");
 
-    // Single source of truth for the pin: `cactus_sys::NEEDLE_ENGINE_COMMIT` reads it back.
+    // Single source of truth for the pin: `cactus_sys::CACTUS_ENGINE_COMMIT` and
+    // `cactus_sys::CACTUS_ENGINE_VERSION` read it back.
     println!(
-        "cargo::rustc-env=NEEDLE_ENGINE_COMMIT={}",
+        "cargo::rustc-env=CACTUS_ENGINE_COMMIT={}",
         prebuilt("commit")
     );
+    println!(
+        "cargo::rustc-env=CACTUS_ENGINE_VERSION={}",
+        prebuilt("release")
+    );
 
-    if !feature("NEEDLE") {
+    if !feature("ENGINE") {
         return;
     }
     if env::var_os("DOCS_RS").is_some() {
         return;
     }
 
-    let lib_dir = match env::var_os("CACTUS_NEEDLE_LIB_DIR") {
-        Some(dir) => lib_dir_from_env(PathBuf::from(dir)),
+    let lib_dir = match local_lib_dir() {
+        Some(dir) => lib_dir_from_env(dir),
         None => downloaded_lib_dir(),
     };
 
     println!("cargo::rustc-link-search=native={}", lib_dir.display());
-    println!("cargo::rustc-link-lib=static=needle");
+    println!("cargo::rustc-link-lib=static=cactus");
     // After the archive and before the C++ runtime, so the linker reaches the shim while the
     // engine's reference is still open.
     if cfg("CARGO_CFG_TARGET_OS") == "linux" {
@@ -103,7 +113,24 @@ fn prebuilt(key: &str) -> &'static str {
     })
 }
 
-/// Verifies that `CACTUS_NEEDLE_LIB_DIR` really holds an engine archive, and returns it.
+/// The directory the caller named, from `CACTUS_LIB_DIR` or its former name.
+///
+/// The former name is honoured so that a build which already points at a local archive does not
+/// silently start downloading one. It must now hold `libcactus.a`: the old `libneedle.a` exports
+/// none of the symbols this crate declares.
+fn local_lib_dir() -> Option<PathBuf> {
+    if let Some(dir) = env::var_os("CACTUS_LIB_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    let dir = env::var_os(LEGACY_LIB_DIR)?;
+    println!(
+        "cargo::warning=cactus-sys: {LEGACY_LIB_DIR} was renamed to CACTUS_LIB_DIR; set that \
+         instead. The directory must hold {ARCHIVE}, not libneedle.a."
+    );
+    Some(PathBuf::from(dir))
+}
+
+/// Verifies that `CACTUS_LIB_DIR` really holds an engine archive, and returns it.
 fn lib_dir_from_env(dir: PathBuf) -> PathBuf {
     // The archive is linked statically, so a replaced file in the same directory must relink.
     println!("cargo::rerun-if-changed={}", dir.join(ARCHIVE).display());
@@ -112,7 +139,7 @@ fn lib_dir_from_env(dir: PathBuf) -> PathBuf {
     }
 
     fail(&format!(
-        "cactus-sys: CACTUS_NEEDLE_LIB_DIR is set to `{}`, but `{ARCHIVE}` is not in it.\n\
+        "cactus-sys: CACTUS_LIB_DIR is set to `{}`, but `{ARCHIVE}` is not in it.\n\
          The variable must name the directory that contains the archive, not the archive itself.\n\
          Help: point it at a directory holding {ARCHIVE}, or unset it and build with the\n\
          `download-binaries` feature to fetch the pinned archive automatically.",
@@ -125,10 +152,10 @@ fn lib_dir_from_env(dir: PathBuf) -> PathBuf {
 fn downloaded_lib_dir() -> PathBuf {
     fail(
         "cactus-sys: no engine archive available.\n\
-         The `needle` feature is on, but `download-binaries` is off and CACTUS_NEEDLE_LIB_DIR\n\
-         is unset, so there is nothing to link against. Cactus Compute ships Needle as a\n\
+         The `engine` feature is on, but `download-binaries` is off and CACTUS_LIB_DIR\n\
+         is unset, so there is nothing to link against. Cactus Compute ships its engine as a\n\
          closed-source static library; this crate cannot build one from source.\n\
-         Help: either set CACTUS_NEEDLE_LIB_DIR to a directory containing libneedle.a for your\n\
+         Help: either set CACTUS_LIB_DIR to a directory containing libcactus.a for your\n\
          target, or enable the `download-binaries` feature to fetch the pinned, SHA-256 verified\n\
          archive from Hugging Face.",
     )
@@ -158,9 +185,9 @@ fn downloaded_lib_dir() -> PathBuf {
 
     if download::offline(env::var("HF_HUB_OFFLINE").ok().as_deref()) {
         fail(&format!(
-            "cactus-sys: offline mode is on (HF_HUB_OFFLINE is set), and the Needle engine\n\
+            "cactus-sys: offline mode is on (HF_HUB_OFFLINE is set), and the Cactus engine\n\
              archive for `{platform}` has not been downloaded into this target directory yet.\n\
-             Help: set CACTUS_NEEDLE_LIB_DIR to a directory holding libneedle.a for your target,\n\
+             Help: set CACTUS_LIB_DIR to a directory holding libcactus.a for your target,\n\
              or unset HF_HUB_OFFLINE (or set it to 0) to allow the download."
         ));
     }
@@ -170,7 +197,7 @@ fn downloaded_lib_dir() -> PathBuf {
         &endpoint,
         prebuilt("repo"),
         prebuilt("commit"),
-        &format!("{platform}/{ARCHIVE}"),
+        &format!("releases/{}/{platform}/{ARCHIVE}", prebuilt("release")),
     );
     download::fetch(&url, &out_dir, &archive, expected);
     out_dir
@@ -189,10 +216,10 @@ fn platform() -> String {
         ("macos", "aarch64") => "macos-arm64",
         ("macos", "x86_64") => fail(
             "cactus-sys: Intel macOS is not supported.\n\
-             Cactus Compute publishes no libneedle.a for x86_64-apple-darwin; the only macOS\n\
+             Cactus Compute publishes no libcactus.a for x86_64-apple-darwin; the only macOS\n\
              archive upstream ships is arm64.\n\
-             Help: build for aarch64-apple-darwin, or set CACTUS_NEEDLE_LIB_DIR to a directory\n\
-             holding an x86_64 libneedle.a you built or obtained yourself.",
+             Help: build for aarch64-apple-darwin, or set CACTUS_LIB_DIR to a directory\n\
+             holding an x86_64 libcactus.a you built or obtained yourself.",
         ),
 
         ("linux", _) if target_env == "gnu" || target_env == "musl" => {
@@ -240,12 +267,12 @@ fn platform() -> String {
 #[cfg(feature = "download-binaries")]
 fn unsupported(os: &str, arch: &str) -> String {
     format!(
-        "cactus-sys: no prebuilt Needle engine for this target (os `{os}`, arch `{arch}`).\n\
+        "cactus-sys: no prebuilt Cactus engine for this target (os `{os}`, arch `{arch}`).\n\
          Cactus Compute publishes archives for macOS arm64, Linux (x86_64, arm64, armv7,\n\
          riscv64, mipsel), Android (arm64, armv7, riscv64), iOS, iOS Simulator, tvOS, watchOS\n\
          and llvm-mingw Windows (x86_64, arm64).\n\
-         Help: build for one of those targets, or set CACTUS_NEEDLE_LIB_DIR to a directory\n\
-         holding a libneedle.a for this one."
+         Help: build for one of those targets, or set CACTUS_LIB_DIR to a directory\n\
+         holding a libcactus.a for this one."
     )
 }
 
@@ -327,7 +354,7 @@ fn require_libcxx() {
 
     fail(
         "cactus-sys: LLVM libc++ was not found.\n\
-         The Needle engine archive is built against libc++, and this system appears to have only\n\
+         The Cactus engine archive is built against libc++, and this system appears to have only\n\
          GNU libstdc++, which cannot stand in for it.\n\
          Help: install libc++ (Debian and Ubuntu: `sudo apt install libc++-dev libc++abi-dev`;\n\
          Fedora: `sudo dnf install libcxx-devel libcxxabi-devel`), or set CACTUS_CXXSTDLIB to the\n\
@@ -489,12 +516,12 @@ mod download {
             Ok(partial) => partial,
             Err(Failure::Fatal(message)) => super::fail(&message),
             Err(Failure::Transient { detail, .. }) => super::fail(&format!(
-                "cactus-sys: could not download the Needle engine archive.\n\
+                "cactus-sys: could not download the Cactus engine archive.\n\
                  url:   {url}\n\
                  error: gave up after {attempts} attempts; the last failed with: {detail}\n\
                  Help: check network access to the hub (HF_ENDPOINT, default huggingface.co),\n\
                  raise CACTUS_DOWNLOAD_TIMEOUT or CACTUS_DOWNLOAD_RETRIES, or build offline by\n\
-                 setting CACTUS_NEEDLE_LIB_DIR to a directory holding libneedle.a for your target."
+                 setting CACTUS_LIB_DIR to a directory holding libcactus.a for your target."
             )),
         };
 
@@ -634,23 +661,23 @@ mod download {
         let status = response.status().as_u16();
         if status == 404 {
             return Err(Failure::Fatal(format!(
-                "cactus-sys: the Needle engine archive is not where the pin says (HTTP 404).\n\
+                "cactus-sys: the Cactus engine archive is not where the pin says (HTTP 404).\n\
                  url: {url}\n\
                  The pinned revision or the file is missing from the repository, so the pin in\n\
                  prebuilt.toml is wrong.\n\
                  Help: restore cactus-sys/prebuilt.toml from the repository, or set\n\
-                 CACTUS_NEEDLE_LIB_DIR to a directory holding libneedle.a for your target."
+                 CACTUS_LIB_DIR to a directory holding libcactus.a for your target."
             )));
         }
         if !(200..300).contains(&status) {
             if !should_retry(Some(status)) {
                 return Err(Failure::Fatal(format!(
-                    "cactus-sys: could not download the Needle engine archive.\n\
+                    "cactus-sys: could not download the Cactus engine archive.\n\
                      url:   {url}\n\
                      error: HTTP {status}\n\
                      Help: check access to the hub (HF_ENDPOINT, default huggingface.co), or\n\
-                     build offline by setting CACTUS_NEEDLE_LIB_DIR to a directory holding\n\
-                     libneedle.a for your target."
+                     build offline by setting CACTUS_LIB_DIR to a directory holding\n\
+                     libcactus.a for your target."
                 )));
             }
             let wait = response
@@ -706,12 +733,12 @@ mod download {
         );
         if fatal {
             Failure::Fatal(format!(
-                "cactus-sys: could not download the Needle engine archive.\n\
+                "cactus-sys: could not download the Cactus engine archive.\n\
                  url:   {url}\n\
                  error: {error}\n\
                  Help: check network access to the hub (HF_ENDPOINT, default huggingface.co), or\n\
-                 build offline by setting CACTUS_NEEDLE_LIB_DIR to a directory holding\n\
-                 libneedle.a for your target."
+                 build offline by setting CACTUS_LIB_DIR to a directory holding\n\
+                 libcactus.a for your target."
             ))
         } else {
             Failure::Transient {

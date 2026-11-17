@@ -1,4 +1,4 @@
-//! Whistle: speech-to-text, word timestamps and speech embedding on the Needle engine.
+//! Whistle: speech-to-text, word timestamps and speech embedding on the Cactus engine.
 //!
 //! ## Overview
 //!

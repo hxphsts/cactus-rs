@@ -4,19 +4,25 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-11-17
 
 ### Changed
 
+- **Breaking:** the engine is Cactus engine 4.1.1 (`libcactus.a`, `cactus.h`), pinned at `Cactus-Compute/cactus` commit `d2c5cd70`. Upstream renamed the library and every symbol with release 4.0 and no longer publishes `libneedle.a`; one engine now runs Needle 3, Whistle and Mirage. Needle and Whistle weights are unchanged, and nothing is downloaded again
+- **Breaking, `cactus-sys`:** every function and constant moves from `needle_*` / `NEEDLE_*` to `cactus_*` / `CACTUS_*`, the module from `cactus_sys::needle` to `cactus_sys::engine`, and the `needle` feature to `engine`. Signatures are unchanged
+- `CACTUS_NEEDLE_LIB_DIR` is now `CACTUS_LIB_DIR` and must hold `libcactus.a`. The old name is still read, with a build warning
+- `needle::weights::WEIGHTS_REVISION` pins the Needle weights on their own; they used to be fetched at the engine's commit
+- The weekly upstream check watches for a new engine release and for a changed weight file, instead of any commit to the upstream repositories
 - Every GitHub Action is pinned to a commit SHA and kept current by Dependabot; workflows have concurrency groups and timeouts, and the weekly pin check retries transient Hugging Face errors and can no longer file an issue twice
 - `Cargo.lock` is committed, so CI, `cargo deny` and local builds resolve the same dependency versions
 - A test in `cactus-sys` compares the hand-written `extern "C"` declarations with the vendored header, function by function
-- With `CACTUS_NEEDLE_LIB_DIR` set, replacing the archive in that directory now triggers a relink
+- With `CACTUS_LIB_DIR` set, replacing the archive in that directory now triggers a relink
 - The published `cactus-sys` crate no longer ships probe tests that read files outside its own package
 - `cargo deny` rejects wildcard dependency versions
 
 ### Added
 
+- `cactus-sys`: `CACTUS_VISION`, `CACTUS_ENGINE_VERSION`, and declarations for `cactus_describe`, `cactus_stream_transcribe_process`, `cactus_stream_transcribe_stop` and `cactus_set_threads`
 - `SECURITY.md`: how to report a vulnerability privately
 
 ## [0.2.1] - 2026-10-06
