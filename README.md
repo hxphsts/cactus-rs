@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-That prints `set_light {"room":"kitchen","on":true}`. The first build downloads the 1 MB engine library and the first run downloads the 35 MB weights; both are pinned and SHA-256 verified.
+That prints `set_light {"room":"kitchen","on":true}`. The first build downloads the engine library (1.5 to 2 MB) and the first run downloads the 35 MB weights; both are pinned and SHA-256 verified.
 
 ### Speech
 
@@ -75,7 +75,7 @@ Once a `Whistle` has loaded the speech model, `needle.complete_audio(&pcm)` turn
 - Speech-to-text in seven languages, with language detection or forcing, keyword biasing and word timestamps
 - Speech embeddings, 512 floats per 80 ms frame
 - Voice to tool calls: `Needle::complete_audio` transcribes and answers in one engine call
-- One model of each kind per process, enforced by the type system; `Needle` and `Whistle` are `Send + Sync` and share one engine lock
+- One model of each kind per process: a second `build()` of the same kind returns `Error::EngineBusy`; `Needle` and `Whistle` are `Send + Sync` and share one engine lock
 - Pinned, checksum-verified engine and weights, with fully offline builds
 - `cactus-sys` for the raw C API underneath
 

@@ -105,6 +105,8 @@ fn prebuilt(key: &str) -> &'static str {
 
 /// Verifies that `CACTUS_NEEDLE_LIB_DIR` really holds an engine archive, and returns it.
 fn lib_dir_from_env(dir: PathBuf) -> PathBuf {
+    // The archive is linked statically, so a replaced file in the same directory must relink.
+    println!("cargo::rerun-if-changed={}", dir.join(ARCHIVE).display());
     if dir.join(ARCHIVE).is_file() {
         return dir;
     }

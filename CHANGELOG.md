@@ -1,5 +1,24 @@
 # Changelog
 
+All notable changes to this project are recorded here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Changed
+
+- Every GitHub Action is pinned to a commit SHA and kept current by Dependabot; workflows have concurrency groups and timeouts, and the weekly pin check retries transient Hugging Face errors and can no longer file an issue twice
+- `Cargo.lock` is committed, so CI, `cargo deny` and local builds resolve the same dependency versions
+- A test in `cactus-sys` compares the hand-written `extern "C"` declarations with the vendored header, function by function
+- With `CACTUS_NEEDLE_LIB_DIR` set, replacing the archive in that directory now triggers a relink
+- The published `cactus-sys` crate no longer ships probe tests that read files outside its own package
+- `cargo deny` rejects wildcard dependency versions
+
+### Added
+
+- `SECURITY.md`: how to report a vulnerability privately
+
 ## [0.2.1] - 2026-10-06
 
 ### Added

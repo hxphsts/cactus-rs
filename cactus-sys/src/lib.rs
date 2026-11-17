@@ -84,6 +84,8 @@
 //! ```
 
 #![no_std]
+#![warn(missing_docs)]
+#![deny(clippy::undocumented_unsafe_blocks)]
 
 #[cfg(feature = "needle")]
 pub mod needle;

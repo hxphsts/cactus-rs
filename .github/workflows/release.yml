@@ -8,14 +8,20 @@ on:
 permissions:
   contents: read
 
+# One release at a time, and never cancelled half way through a publish.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   verify:
     runs-on: macos-14
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       # A release is a tag on main. A tag on any other commit stops here, before anything runs.
@@ -23,8 +29,9 @@ jobs:
         run: |
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main"; exit 1; }
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
+          toolchain: stable
           components: clippy, rustfmt
       # Both crates ship at the tag's version, and cactus-rs asks for exactly that cactus-sys.
       - name: tag matches both crate versions
@@ -52,7 +59,7 @@ jobs:
       - name: pins agree everywhere they are copied
         run: .github/scripts/check-pins.sh
       # Against the latest crates.io release. DOCS_RS keeps the builds from fetching the engine.
-      - uses: obi1kenobi/cargo-semver-checks-action@v2
+      - uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2.9
         with:
           package: cactus-sys, cactus-rs
           rust-toolchain: manual
@@ -66,12 +73,13 @@ jobs:
   publish:
     needs: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: release
     permissions:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # A version that is already on crates.io is skipped, so re-running a tag is harmless.
       - name: which crates still need publishing
         id: missing
@@ -85,11 +93,13 @@ jobs:
               *) echo "crates.io answered $code for $crate $version"; exit 1 ;;
             esac
           done
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         if: steps.missing.outputs.cactus-sys == 'true' || steps.missing.outputs.cactus-rs == 'true'
+        with:
+          toolchain: stable
       - run: sudo apt-get update && sudo apt-get install -y libc++-dev libc++abi-dev
         if: steps.missing.outputs.cactus-sys == 'true' || steps.missing.outputs.cactus-rs == 'true'
-      - uses: rust-lang/crates-io-auth-action@v1
+      - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
         id: auth
         if: steps.missing.outputs.cactus-sys == 'true' || steps.missing.outputs.cactus-rs == 'true'
       # The safe crate depends on the sys crate, so the order matters.
@@ -105,10 +115,11 @@ jobs:
   github-release:
     needs: publish
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The tagged version's CHANGELOG.md section, verbatim; `verify` already checked it exists.
       - name: release notes from the changelog
         run: |
