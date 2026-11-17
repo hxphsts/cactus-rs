@@ -487,11 +487,20 @@ fn transcribe(out: &mut Vec<u8>, pcm: &[f32], audio: &EncodedAudio) -> Result<Tr
     String::from_utf8_lossy(&out[..end]).parse()
 }
 
-/// The buffer size the engine asks for in a "too small" failure, with room for the NUL.
+/// Room added to the size the engine asks for.
+///
+/// A transcript ends with the timings of the call that produced it, and their digits change
+/// from one call to the next (`9.7` then `112.4`), so the repeated call can need a few bytes
+/// more than the failed one asked for. Without this room it would fail again, and run the whole
+/// transcription a third time.
+const SIZE_MARGIN: usize = 64;
+
+/// The buffer size to retry with after a "too small" failure: what the engine asks for, plus
+/// [`SIZE_MARGIN`].
 fn needed(detail: &str) -> Option<usize> {
     let rest = detail.strip_prefix(TOO_SMALL)?;
     let digits = rest.split(|c: char| !c.is_ascii_digit()).next()?;
-    digits.parse::<usize>().ok()?.checked_add(1)
+    digits.parse::<usize>().ok()?.checked_add(SIZE_MARGIN)
 }
 
 /// Prints the configuration, never a transcript.
@@ -547,7 +556,7 @@ mod tests {
         // Measured: a 32-byte buffer for a 169-byte transcript.
         assert_eq!(
             needed("output buffer is too small: 170 bytes needed"),
-            Some(171)
+            Some(170 + SIZE_MARGIN)
         );
         assert_eq!(needed("output buffer is too small: "), None);
         assert_eq!(needed("audio limit is 30 s"), None);

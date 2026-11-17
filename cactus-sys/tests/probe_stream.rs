@@ -351,12 +351,19 @@ fn probe_stream() {
         // ---- `cactus_transcribe` since engine 4: any length, and no truncation.
         let short = transcribe("one-shot, 32-byte buffer", &jfk, false, 32);
         assert!(short.rc < 0);
-        assert_eq!(
-            short.error,
-            format!(
-                "output buffer is too small: {} bytes needed",
-                whole.text.len() + 1
-            )
+        // The size it asks for is this call's, not an earlier one's: the result ends with
+        // the call's timings, whose digits change from run to run (`9.7`, then `112.4`), so it
+        // is compared with the first transcription's size within a few bytes, not exactly.
+        let asked: usize = short
+            .error
+            .strip_prefix("output buffer is too small: ")
+            .and_then(|rest| rest.strip_suffix(" bytes needed"))
+            .and_then(|bytes| bytes.parse().ok())
+            .unwrap_or_else(|| panic!("no size in {:?}", short.error));
+        assert!(
+            asked.abs_diff(whole.text.len() + 1) <= 16,
+            "asked for {asked} bytes, the first result was {} long",
+            whole.text.len()
         );
         assert_eq!(short.text, "");
 
