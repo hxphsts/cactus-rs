@@ -12,10 +12,10 @@
 //! [`cactus-sys`](https://docs.rs/cactus-sys) links that library; this crate is the safe API over
 //! it.
 //!
-//! The engine holds one process-global model per kind, text and speech, behind one
-//! non-thread-safe runtime. There are no handles, no streaming, and weights cannot be unloaded
-//! once they are in. Those are the constraints the API is shaped around, and [`needle::engine`]
-//! and [`whistle::engine`] spell out what each one means for a program.
+//! The engine holds one process-global model per kind (text, speech and vision) behind one
+//! non-thread-safe runtime. There are no handles, no token streaming, and weights cannot be
+//! unloaded once they are in. Those are the constraints the API is shaped around, and
+//! [`needle::engine`] and [`whistle::engine`] spell out what each one means for a program.
 //!
 //! ## What is Whistle?
 //!
@@ -308,6 +308,7 @@
 //! - **`desktop.rs`**: a twelve-tool simulated desktop agent that scores itself against expected calls
 //! - **`transcribe.rs`**: a WAV file transcribed, with language, keywords and word timestamps
 //! - **`voice_lights.rs`**: a spoken request turned into light-switch calls by Needle
+//! - **`voice_stream.rs`**: speech turned into a tool call while it is still being spoken
 //! - **`describe.rs`**: an image described and a decision made about it (needs the `image` feature)
 //!
 //! Run any example with `cargo run -p cactus-rs --example <name>`.

@@ -99,6 +99,11 @@ path = "examples/voice_lights.rs"
 required-features = ["download"]
 
 [[example]]
+name = "voice_stream"
+path = "examples/voice_stream.rs"
+required-features = ["download"]
+
+[[example]]
 name = "describe"
 path = "examples/describe.rs"
 required-features = ["download", "image"]

@@ -251,11 +251,16 @@ pub enum Error {
     )]
     SpeechModelNotLoaded,
 
-    /// The clip is longer than the engine accepts.
+    /// The clip is longer than the call accepts.
+    ///
+    /// Speech embeddings and audio completions take at most 30 seconds. Transcription takes
+    /// any length the C API can count, a little over 37 hours.
     #[error(
-        "the clip is {samples} samples long, more than the 480000 the engine accepts\n\
-         The engine takes at most 30 seconds of 16 kHz mono audio in one call.\n\
-         Help: split the clip into chunks of at most 30 seconds and send them one at a time."
+        "the clip is {samples} samples long, more than this call accepts\n\
+         Speech embeddings and audio completions take at most 30 seconds of 16 kHz mono audio \
+         (480000 samples) in one call; transcription takes at most 2147483647 samples.\n\
+         Help: split the clip into shorter pieces and send them one at a time, or transcribe \
+         it and pass the text on."
     )]
     AudioTooLong {
         /// The number of samples in the clip.
